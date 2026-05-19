@@ -1,0 +1,38 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: dpe
+      POSTGRES_PASSWORD: dpe
+      POSTGRES_DB: dpe
+    ports:
+      - "5432:5432"
+    volumes:
+      - dpe_pg:/var/lib/postgresql/data
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+  control-plane:
+    build:
+      context: .
+      dockerfile: infra/docker/control-plane.Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      DATABASE_URL: postgresql://dpe:dpe@postgres:5432/dpe
+      REDIS_URL: redis://redis:6379
+      PORT: "3001"
+    depends_on:
+      - postgres
+      - redis
+  signaling:
+    build:
+      context: .
+      dockerfile: infra/docker/signaling.Dockerfile
+    ports:
+      - "3002:3002"
+    environment:
+      PORT: "3002"
+volumes:
+  dpe_pg:

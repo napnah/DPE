@@ -1,0 +1,22 @@
+{
+  "name": "distributed-privacy-editor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Distributed Privacy Editor (DPE)",
+  "license": "MIT",
+  "packageManager": "pnpm@9.15.0",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "clean": "node scripts/clean.mjs"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "prettier": "^3.4.2",
+    "turbo": "^2.3.3",
+    "typescript": "^5.7.2"
+  }
+}
