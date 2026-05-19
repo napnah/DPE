@@ -1,0 +1,119 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Group {
+  id              String   @id @default(uuid())
+  name            String
+  ownerNodeId     String   @map("owner_node_id")
+  ownerPublicKey  String   @map("owner_public_key")
+  controlMode     String   @default("proxy") @map("control_mode")
+  proxyNodeId     String?  @map("proxy_node_id")
+  proxyPublicKey  String?  @map("proxy_public_key")
+  proxyBaseUrl    String?  @map("proxy_base_url")
+  issuerNodeId    String   @map("issuer_node_id")
+  issuerPublicKey String   @map("issuer_public_key")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  members      Member[]
+  invitations  Invitation[]
+  docNodes     DocNode[]
+  aclGrants    AclGrant[]
+
+  @@map("groups")
+}
+
+model Member {
+  id        String    @id @default(uuid())
+  groupId   String    @map("group_id")
+  nodeId    String    @map("node_id")
+  publicKey String    @map("public_key")
+  joinedAt  DateTime  @default(now()) @map("joined_at")
+  leftAt    DateTime? @map("left_at")
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, nodeId])
+  @@map("members")
+}
+
+model Invitation {
+  id            String   @id @default(uuid())
+  groupId       String   @map("group_id")
+  inviterNodeId String   @map("inviter_node_id")
+  inviteeNodeId String   @map("invitee_node_id")
+  status        String   @default("pending")
+  expiresAt     DateTime? @map("expires_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@index([inviteeNodeId, status])
+  @@map("group_invitations")
+}
+
+model DocNode {
+  docId       String   @id @map("doc_id")
+  groupId     String   @map("group_id")
+  parentDocId String?  @map("parent_doc_id")
+  title       String   @default("Untitled")
+  sortOrder   Int      @default(0) @map("sort_order")
+  keyVersion  Int      @default(1) @map("key_version")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  keys  DocumentKey[]
+
+  @@index([groupId, parentDocId])
+  @@map("doc_nodes")
+}
+
+/// DEV: server-side doc key material for issuing JWT (replace with HSM in production).
+model DocumentKey {
+  groupId    String @map("group_id")
+  docId      String @map("doc_id")
+  keyVersion Int    @map("key_version")
+  keyBase64  String @map("key_base64")
+
+  doc DocNode @relation(fields: [docId], references: [docId], onDelete: Cascade)
+
+  @@id([groupId, docId, keyVersion])
+  @@map("document_keys")
+}
+
+model AclGrant {
+  groupId   String   @map("group_id")
+  docId     String   @map("doc_id")
+  nodeId    String   @map("node_id")
+  role      Int
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([groupId, docId, nodeId])
+  @@map("acl_grants")
+}
+
+model JwtRevocation {
+  jti       String   @id
+  revokedAt DateTime @default(now()) @map("revoked_at")
+
+  @@map("jwt_revocations")
+}
+
+model KeyRotationEvent {
+  id         String   @id @default(uuid())
+  groupId    String   @map("group_id")
+  docId      String   @map("doc_id")
+  keyVersion Int      @map("key_version")
+  payloadJson String  @map("payload_json")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([groupId, docId])
+  @@map("key_rotation_events")
+}
