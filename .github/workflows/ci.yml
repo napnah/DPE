@@ -54,4 +54,4 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: P1 unit tests
-        run: pnpm verify:p1
+        run: pnpm test:p1
