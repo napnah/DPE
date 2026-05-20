@@ -87,6 +87,7 @@ export class GroupsService {
           keyBase64: bytesToBase64Url(rootKey),
         },
       });
+      await seedGroupRbac(tx, g.id, dto.owner_node_id);
       return g;
     });
 
@@ -160,28 +161,9 @@ export class GroupsService {
 
     const group = await this.requireGroup(inv.groupId);
     await this.joinGroup(inv.groupId, dto);
-    const rules = await this.prisma.groupDefaultRules.findUnique({
-      where: { groupId: inv.groupId },
-    });
-    if (rules) {
-      const hasDefaultRole = await this.prisma.memberRoleAssignment.findFirst({
-        where: {
-          groupId: inv.groupId,
-          nodeId: dto.node_id,
-          roleId: rules.defaultMemberRoleId,
-        },
-      });
-      if (!hasDefaultRole) {
-        await this.prisma.memberRoleAssignment.create({
-          data: {
-            groupId: inv.groupId,
-            nodeId: dto.node_id,
-            roleId: rules.defaultMemberRoleId,
-          },
-        });
-      }
-      await syncMemberAllDocs(this.prisma, inv.groupId, dto.node_id, group.ownerNodeId);
-    }
+    await this.prisma.$transaction((tx) =>
+      ensureGroupRbac(tx, inv.groupId, group.ownerNodeId),
+    );
     await this.prisma.invitation.update({
       where: { id: invitationId },
       data: { status: "accepted" },

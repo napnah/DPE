@@ -16,8 +16,14 @@ export async function ensureGroupRbac(
   ownerNodeId: string,
 ): Promise<void> {
   const count = await tx.groupRole.count({ where: { groupId } });
-  if (count > 0) return;
-  const { template } = await seedGroupRbac(tx, groupId, ownerNodeId);
+  if (count === 0) {
+    await seedGroupRbac(tx, groupId, ownerNodeId);
+  }
+
+  const rules = await tx.groupDefaultRules.findUnique({ where: { groupId } });
+  if (!rules) return;
+
+  const template = rules.createChildTemplate as Record<string, number>;
   const docs = await tx.docNode.findMany({ where: { groupId } });
   for (const d of docs) {
     const existing = await tx.docRoleAcl.count({
@@ -27,9 +33,26 @@ export async function ensureGroupRbac(
       await applyCreateChildTemplate(tx, groupId, d.docId, template);
     }
   }
-  const members = await tx.member.findMany({ where: { groupId, leftAt: null } });
+
   const group = await tx.group.findUnique({ where: { id: groupId } });
   if (!group) return;
+
+  const members = await tx.member.findMany({ where: { groupId, leftAt: null } });
+  for (const m of members) {
+    if (m.nodeId === group.ownerNodeId) continue;
+    const assigned = await tx.memberRoleAssignment.count({
+      where: { groupId, nodeId: m.nodeId },
+    });
+    if (assigned === 0) {
+      await tx.memberRoleAssignment.create({
+        data: {
+          groupId,
+          nodeId: m.nodeId,
+          roleId: rules.defaultMemberRoleId,
+        },
+      });
+    }
+  }
   for (const m of members) {
     await syncMemberAllDocs(tx, groupId, m.nodeId, group.ownerNodeId);
   }
@@ -70,14 +93,7 @@ export async function seedGroupRbac(
   await tx.memberRoleAssignment.create({
     data: { groupId, nodeId: ownerNodeId, roleId: bySlug.admin!.id },
   });
-  await tx.docRoleAcl.create({
-    data: {
-      groupId,
-      docId: ROOT_DOC_ID,
-      roleId: bySlug.admin!.id,
-      accessLevel: 3,
-    },
-  });
+  await applyCreateChildTemplate(tx, groupId, ROOT_DOC_ID, template);
   return { adminId: bySlug.admin!.id, readerId: bySlug.reader!.id, template };
 }
 
