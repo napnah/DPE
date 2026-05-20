@@ -17,6 +17,7 @@
     "verify:p2": "node scripts/verify-p2.mjs",
     "verify:p3": "node scripts/verify-p3.mjs",
     "verify:p4": "node scripts/verify-p4.mjs",
+    "verify:p5": "node scripts/verify-p5.mjs",
     "test:p3": "pnpm --filter @dpe/p2p test",
     "test:p4": "pnpm --filter @dpe/yjs-provider test"
   },

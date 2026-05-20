@@ -140,12 +140,24 @@ importers:
 
   apps/web:
     dependencies:
+      '@dpe/acl':
+        specifier: workspace:*
+        version: link:../../packages/acl
       '@dpe/crypto':
         specifier: workspace:*
         version: link:../../packages/crypto
+      '@dpe/p2p':
+        specifier: workspace:*
+        version: link:../../packages/p2p
+      '@dpe/proto':
+        specifier: workspace:*
+        version: link:../../packages/proto
       '@dpe/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@dpe/yjs-provider':
+        specifier: workspace:*
+        version: link:../../packages/yjs-provider
       react:
         specifier: ^19.0.0
         version: 19.2.6
@@ -155,6 +167,9 @@ importers:
       react-router-dom:
         specifier: ^7.1.1
         version: 7.15.1(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      yjs:
+        specifier: ^13.6.20
+        version: 13.6.30
     devDependencies:
       '@types/react':
         specifier: ^19.0.0

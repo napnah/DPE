@@ -10,9 +10,14 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@dpe/acl": "workspace:*",
     "@dpe/crypto": "workspace:*",
+    "@dpe/p2p": "workspace:*",
+    "@dpe/proto": "workspace:*",
     "@dpe/shared": "workspace:*",
+    "@dpe/yjs-provider": "workspace:*",
     "react": "^19.0.0",
+    "yjs": "^13.6.20",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.1.1"
   },

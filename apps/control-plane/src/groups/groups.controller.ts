@@ -73,6 +73,11 @@ export class GroupsController {
     return this.groups.rotateDocKey(id, callerNodeId, docId);
   }
 
+  @Get("groups/:id/members")
+  members(@Param("id") id: string) {
+    return this.groups.listMembers(id);
+  }
+
   @Get("groups/:id/tree")
   tree(@Param("id") id: string, @Query("node_id") nodeId: string) {
     return this.groups.getTree(id, nodeId);

@@ -260,6 +260,19 @@ export class GroupsService {
     return { ok: true, doc_id: docId, key_version: newVersion };
   }
 
+  async listMembers(groupId: string) {
+    const rows = await this.prisma.member.findMany({
+      where: { groupId, leftAt: null },
+      orderBy: { joinedAt: "asc" },
+    });
+    return {
+      members: rows.map((m) => ({
+        node_id: m.nodeId,
+        public_key: m.publicKey,
+      })),
+    };
+  }
+
   async getTree(groupId: string, nodeId: string) {
     await this.requireMember(groupId, nodeId);
     const grants = await this.prisma.aclGrant.findMany({ where: { groupId, nodeId } });
