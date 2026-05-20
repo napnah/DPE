@@ -173,6 +173,63 @@ code {
   min-height: 0;
 }
 
+
+.app-copyable {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 0.75rem;
+}
+
+.app-copyable:last-child {
+  margin-bottom: 0;
+}
+
+.app-copyable__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.app-copyable__label {
+  font-size: var(--bz-font-size);
+  font-weight: 600;
+  color: var(--bz-text);
+}
+
+.app-copyable__hint {
+  font-size: 12px;
+}
+
+.app-copyable__row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.app-copyable__value {
+  flex: 1;
+  min-width: 0;
+  padding: 0.4rem 0.55rem;
+  font-size: 12px;
+  word-break: break-all;
+  background: var(--bz-bg);
+  border: 1px solid var(--bz-border-light);
+  border-radius: var(--bz-radius);
+}
+
+.app-panel--identity .app-copyable + .app-copyable {
+  margin-top: 0.25rem;
+}
+
+.app-role-chip-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
 /* Pages */
 .app-page {
   max-width: 1080px;

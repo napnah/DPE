@@ -44,4 +44,6 @@ export interface UpdateGovernanceDto {
   member_roles?: { node_id: string; role_ids: string[] }[];
   create_roles?: { name: string; color?: string; slug?: string }[];
   roles?: { id?: string; name: string; color?: string }[];
+  /** Remove roles: clear member assignments and doc ACL rows, then delete role */
+  delete_role_ids?: string[];
 }

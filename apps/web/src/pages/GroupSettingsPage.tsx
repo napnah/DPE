@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { CopyableField } from "../components/CopyableField";
 import { api, type GovernancePayload } from "../lib/api";
 import { stopGroupMesh } from "../lib/mesh-context";
 import { loadIdentity } from "../lib/identity";
@@ -77,6 +78,30 @@ export default function GroupSettingsPage() {
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "创建失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteRole(roleId: string, roleName: string) {
+    if (!nodeId) return;
+    if (
+      !window.confirm(
+        `确定删除角色「${roleName}」？\n将移除所有成员与该角色的关联，并从全部文档 ACL 中删除该角色。`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.updateGovernance(gid, {
+        caller_node_id: nodeId,
+        delete_role_ids: [roleId],
+      });
+      setToast(`已删除角色「${roleName}」`);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "删除失败");
     } finally {
       setBusy(false);
     }
@@ -169,6 +194,12 @@ export default function GroupSettingsPage() {
 
       {gov && (
         <>
+          <section className="app-panel app-panel--identity">
+            <h2>群组标识</h2>
+            <p className="app-muted">邀请他人或配置网络时，可提供下方群组 ID。</p>
+            <CopyableField label="群组 ID" value={gov.group_id ?? gid} hint="UUID，不可修改" />
+          </section>
+
           <section className="app-panel">
             <h2>定义角色</h2>
             <p className="app-muted">成员可同时拥有多个角色；有效权限取各角色在文档上的最高级别。</p>
@@ -193,11 +224,21 @@ export default function GroupSettingsPage() {
             <h3>已有角色</h3>
             <ul className="app-role-chips">
               {gov.roles.map((r) => (
-                <li key={r.id}>
+                <li key={r.id} className="app-role-chip-row">
                   <span className="app-role-chip" style={{ borderColor: r.color, color: r.color }}>
                     {r.name}
                     {r.is_builtin ? "（内置）" : ""}
                   </span>
+                  {!r.is_builtin && (
+                    <button
+                      type="button"
+                      className="app-btn app-btn--small app-btn--danger"
+                      disabled={busy}
+                      onClick={() => void deleteRole(r.id, r.name)}
+                    >
+                      删除
+                    </button>
+                  )}
                 </li>
               ))}
             </ul>

@@ -669,6 +669,62 @@ export class GroupsService {
           },
         });
       }
+      if (dto.delete_role_ids?.length) {
+        for (const roleId of dto.delete_role_ids) {
+          const role = await tx.groupRole.findFirst({ where: { id: roleId, groupId } });
+          if (!role) throw new NotFoundException(`role not found: ${roleId}`);
+          if (role.isBuiltin) {
+            throw new BadRequestException(`cannot delete builtin role: ${role.slug}`);
+          }
+
+          const affected = await tx.memberRoleAssignment.findMany({
+            where: { groupId, roleId },
+          });
+
+          await tx.memberRoleAssignment.deleteMany({ where: { groupId, roleId } });
+          await tx.docRoleAcl.deleteMany({ where: { groupId, roleId } });
+
+          const rules = await tx.groupDefaultRules.findUnique({ where: { groupId } });
+          if (rules) {
+            const tpl = { ...(rules.createChildTemplate as Record<string, number>) };
+            delete tpl[roleId];
+            let defaultMemberRoleId = rules.defaultMemberRoleId;
+            if (defaultMemberRoleId === roleId) {
+              const reader = await tx.groupRole.findFirst({
+                where: { groupId, slug: "reader" },
+              });
+              if (!reader) {
+                throw new BadRequestException("no fallback role for default member");
+              }
+              defaultMemberRoleId = reader.id;
+            }
+            await tx.groupDefaultRules.update({
+              where: { groupId },
+              data: {
+                defaultMemberRoleId,
+                createChildTemplate: tpl,
+              },
+            });
+          }
+
+          await tx.groupRole.delete({ where: { id: roleId } });
+
+          const seen = new Set<string>();
+          for (const a of affected) {
+            if (seen.has(a.nodeId)) continue;
+            seen.add(a.nodeId);
+            if (a.nodeId === group.ownerNodeId) continue;
+            const remaining = await tx.memberRoleAssignment.count({
+              where: { groupId, nodeId: a.nodeId },
+            });
+            if (remaining === 0) {
+              await tx.aclGrant.deleteMany({ where: { groupId, nodeId: a.nodeId } });
+            } else {
+              await syncMemberAllDocs(tx, groupId, a.nodeId, group.ownerNodeId);
+            }
+          }
+        }
+      }
       if (dto.create_roles?.length) {
         const maxSort = await tx.groupRole.aggregate({
           where: { groupId },

@@ -175,6 +175,7 @@ export const api = {
       member_roles?: { node_id: string; role_ids: string[] }[];
       create_roles?: { name: string; color?: string; slug?: string }[];
       roles?: { id?: string; name: string; color?: string }[];
+      delete_role_ids?: string[];
     },
   ) {
     return request<{ ok: boolean }>(`/groups/${groupId}/governance`, {
