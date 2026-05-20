@@ -1,0 +1,80 @@
+/* Linear / Vercel-inspired: compact, monochrome accent, sharp toolbar */
+.dpe-breeze {
+  --dpe-bg: #fafafa;
+  --dpe-surface: #ffffff;
+  --dpe-border: #e5e5e5;
+  --dpe-text: #171717;
+  --dpe-muted: #737373;
+  --dpe-accent: #171717;
+  --dpe-accent-hover: #404040;
+  --dpe-font-size: 13px;
+  --dpe-radius: 6px;
+  --dpe-radius-sm: 4px;
+  --dpe-shadow: none;
+}
+
+.dpe-breeze .dpe-topbar {
+  background: #fff;
+  padding: 0.5rem 1rem;
+  min-height: 44px;
+}
+
+.dpe-breeze .dpe-brand {
+  font-size: 13px;
+  letter-spacing: -0.03em;
+}
+
+.dpe-breeze .dpe-btn--primary {
+  background: #171717;
+  border-color: #171717;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.dpe-breeze .dpe-btn--primary:hover {
+  background: #404040;
+}
+
+.dpe-breeze .dpe-panel,
+.dpe-breeze .dpe-sidebar,
+.dpe-breeze .dpe-group-main,
+.dpe-breeze .dpe-inspector {
+  box-shadow: none;
+  border-radius: 4px;
+}
+
+.dpe-breeze .dpe-page-header h1 {
+  font-size: 1.125rem;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+
+.dpe-breeze .dpe-group-layout {
+  grid-template-columns: 220px 1fr 280px;
+  gap: 0.5rem;
+}
+
+.dpe-breeze .dpe-tabs button.is-active {
+  color: var(--dpe-text);
+  font-weight: 600;
+}
+
+.dpe-breeze .dpe-badge--ok {
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.dpe-breeze .dpe-editor {
+  font-size: 14px;
+  border-radius: 4px;
+  min-height: calc(100vh - 160px);
+}
+
+.dpe-breeze .dpe-editor-toolbar {
+  background: #fff;
+}
+
+.dpe-breeze .dpe-variant-pill {
+  background: #f5f5f5;
+  font-weight: 500;
+}

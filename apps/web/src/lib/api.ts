@@ -33,10 +33,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export type GroupSummary = {
   group_id: string;
   name: string;
+  description?: string;
   control_mode: string;
   owner_node_id: string;
   proxy_base_url: string | null;
   created_at: string;
+};
+
+export type GroupCardRow = GroupSummary & {
+  is_owner: boolean;
+  my_role_name: string;
+  my_role_color: string;
 };
 
 export type DocNodeRow = {
@@ -56,9 +63,38 @@ export type InvitationRow = {
   group: { id: string; name: string; issuerPublicKey: string };
 };
 
+export type GovernancePayload = {
+  group_id: string;
+  name: string;
+  description: string;
+  roles: { id: string; name: string; slug: string; color: string; is_builtin: boolean }[];
+  assignments: { node_id: string; role_id: string }[];
+  default_rules: {
+    default_member_role_id: string;
+    create_child_template: Record<string, number>;
+  } | null;
+  members: { node_id: string; public_key: string }[];
+};
+
+export type MyRoleOnDocRow = {
+  role_id: string;
+  name: string;
+  color: string;
+  access_level: number;
+};
+
+export type DocRoleAclRow = {
+  doc_id: string;
+  my_access_level: number;
+  my_roles: MyRoleOnDocRow[];
+  can_manage_acl: boolean;
+  roles: { id: string; name: string; color: string; access_level: number }[];
+};
+
 export const api = {
   createGroup(body: {
     name: string;
+    description?: string;
     owner_node_id: string;
     owner_public_key: string;
     control_mode?: "owner_direct" | "proxy";
@@ -68,6 +104,12 @@ export const api = {
       pk_admin: string;
       name: string;
     }>("/groups", { method: "POST", body: JSON.stringify(body) });
+  },
+
+  listAllGroups(nodeId: string) {
+    return request<GroupCardRow[]>(
+      `/users/me/groups/all?node_id=${encodeURIComponent(nodeId)}`,
+    );
   },
 
   listGroups(nodeId: string, role: "owner" | "member") {
@@ -106,6 +148,36 @@ export const api = {
     );
   },
 
+  getGovernance(groupId: string, callerNodeId: string) {
+    return request<GovernancePayload>(
+      `/groups/${groupId}/governance?caller_node_id=${encodeURIComponent(callerNodeId)}`,
+    );
+  },
+
+  updateGovernance(
+    groupId: string,
+    body: {
+      caller_node_id: string;
+      default_member_role_id?: string;
+      create_child_template?: Record<string, number>;
+      assignments?: { node_id: string; role_id: string }[];
+      member_roles?: { node_id: string; role_ids: string[] }[];
+      create_roles?: { name: string; color?: string; slug?: string }[];
+      roles?: { id?: string; name: string; color?: string }[];
+    },
+  ) {
+    return request<{ ok: boolean }>(`/groups/${groupId}/governance`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  getDocRoleAcls(groupId: string, docId: string, callerNodeId: string) {
+    return request<DocRoleAclRow>(
+      `/groups/${groupId}/docs/${docId}/role-acls?caller_node_id=${encodeURIComponent(callerNodeId)}`,
+    );
+  },
+
   getTree(groupId: string, nodeId: string) {
     return request<{ nodes: DocNodeRow[] }>(
       `/groups/${groupId}/tree?node_id=${encodeURIComponent(nodeId)}`,
@@ -128,21 +200,24 @@ export const api = {
     );
   },
 
-  setAcl(
+  setDocRoleAcl(
     groupId: string,
     callerNodeId: string,
-    body: { op: "SetACL"; doc_id: string; user_node_id: string; role: number },
+    body: { doc_id: string; group_role_id: string; access_level: number },
   ) {
     return request<{ ok: boolean }>(
       `/groups/${groupId}/rpc?caller_node_id=${encodeURIComponent(callerNodeId)}`,
-      { method: "POST", body: JSON.stringify(body) },
+      {
+        method: "POST",
+        body: JSON.stringify({ op: "SetDocRoleAcl", ...body }),
+      },
     );
   },
 
   createChild(
     groupId: string,
     callerNodeId: string,
-    body: { parent_doc_id: string; doc_id: string; title?: string },
+    body: { parent_doc_id: string; doc_id: string; title?: string; is_folder?: boolean },
   ) {
     return request<{ ok: boolean; doc_id: string }>(
       `/groups/${groupId}/rpc?caller_node_id=${encodeURIComponent(callerNodeId)}`,

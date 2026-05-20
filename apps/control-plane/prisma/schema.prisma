@@ -10,6 +10,7 @@ datasource db {
 model Group {
   id              String   @id @default(uuid())
   name            String
+  description     String   @default("")
   ownerNodeId     String   @map("owner_node_id")
   ownerPublicKey  String   @map("owner_public_key")
   controlMode     String   @default("proxy") @map("control_mode")
@@ -20,12 +21,71 @@ model Group {
   issuerPublicKey String   @map("issuer_public_key")
   createdAt       DateTime @default(now()) @map("created_at")
 
-  members      Member[]
-  invitations  Invitation[]
-  docNodes     DocNode[]
-  aclGrants    AclGrant[]
+  members         Member[]
+  invitations     Invitation[]
+  docNodes        DocNode[]
+  aclGrants       AclGrant[]
+  groupRoles      GroupRole[]
+  memberRoles     MemberRoleAssignment[]
+  defaultRules    GroupDefaultRules?
+  docRoleAcls     DocRoleAcl[]
 
   @@map("groups")
+}
+
+/// Named group role (管理员 / 协作者 / 读者 + custom).
+model GroupRole {
+  id        String   @id @default(uuid())
+  groupId   String   @map("group_id")
+  name      String
+  slug      String
+  color     String   @default("#0969da")
+  sortOrder Int      @default(0) @map("sort_order")
+  isBuiltin Boolean  @default(false) @map("is_builtin")
+
+  group       Group                  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  assignments MemberRoleAssignment[]
+  docAcls     DocRoleAcl[]
+
+  @@unique([groupId, slug])
+  @@map("group_roles")
+}
+
+model MemberRoleAssignment {
+  groupId String @map("group_id")
+  nodeId  String @map("node_id")
+  roleId  String @map("role_id")
+
+  group Group     @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  role  GroupRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([groupId, nodeId, roleId])
+  @@map("member_role_assignments")
+}
+
+model GroupDefaultRules {
+  groupId               String @id @map("group_id")
+  defaultMemberRoleId   String @map("default_member_role_id")
+  /// JSON map: roleId -> access level (0-3) for CreateChild template
+  createChildTemplate   Json   @map("create_child_template")
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@map("group_default_rules")
+}
+
+/// Per-document access level per group role (RBAC).
+model DocRoleAcl {
+  groupId      String @map("group_id")
+  docId        String @map("doc_id")
+  roleId       String @map("role_id")
+  accessLevel  Int    @map("access_level")
+
+  group Group     @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  role  GroupRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([groupId, docId, roleId])
+  @@map("doc_role_acls")
 }
 
 model Member {
@@ -62,6 +122,7 @@ model DocNode {
   docId       String   @map("doc_id")
   parentDocId String?  @map("parent_doc_id")
   title       String   @default("Untitled")
+  isFolder    Boolean  @default(false) @map("is_folder")
   sortOrder   Int      @default(0) @map("sort_order")
   keyVersion  Int      @default(1) @map("key_version")
   createdAt   DateTime @default(now()) @map("created_at")

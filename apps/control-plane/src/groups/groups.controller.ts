@@ -8,7 +8,13 @@ import {
   Query,
 } from "@nestjs/common";
 import { GroupsService } from "./groups.service.js";
-import type { CreateGroupDto, CreateInvitationDto, JoinGroupDto, RefreshJwtDto } from "./groups.dto.js";
+import type {
+  CreateGroupDto,
+  CreateInvitationDto,
+  JoinGroupDto,
+  RefreshJwtDto,
+  UpdateGovernanceDto,
+} from "./groups.dto.js";
 
 @Controller()
 export class GroupsController {
@@ -25,6 +31,30 @@ export class GroupsController {
     @Query("role") role: "owner" | "member",
   ) {
     return this.groups.listGroupsForNode(nodeId, role ?? "member");
+  }
+
+  @Get("users/me/groups/all")
+  listAllGroups(@Query("node_id") nodeId: string) {
+    return this.groups.listAllGroupsForNode(nodeId);
+  }
+
+  @Get("groups/:id/governance")
+  governance(@Param("id") id: string, @Query("caller_node_id") callerNodeId: string) {
+    return this.groups.getGovernance(id, callerNodeId);
+  }
+
+  @Post("groups/:id/governance")
+  updateGovernance(@Param("id") id: string, @Body() body: UpdateGovernanceDto) {
+    return this.groups.updateGovernance(id, body);
+  }
+
+  @Get("groups/:id/docs/:docId/role-acls")
+  docRoleAcls(
+    @Param("id") id: string,
+    @Param("docId") docId: string,
+    @Query("caller_node_id") callerNodeId: string,
+  ) {
+    return this.groups.getDocRoleAcls(id, docId, callerNodeId);
   }
 
   @Post("groups/:id/join")

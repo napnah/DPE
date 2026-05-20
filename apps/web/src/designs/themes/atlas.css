@@ -1,0 +1,54 @@
+/* Notion-inspired: warm paper, soft shadow, left-accent sidebar */
+.dpe-atlas {
+  --dpe-bg: #fbfbfa;
+  --dpe-surface: #f1f0ed;
+  --dpe-border: #e8e7e4;
+  --dpe-text: #37352f;
+  --dpe-muted: #787774;
+  --dpe-accent: #2383e2;
+  --dpe-accent-hover: #1a73c4;
+  --dpe-radius: 10px;
+  --dpe-shadow: 0 1px 3px rgba(15, 15, 15, 0.06), 0 4px 12px rgba(15, 15, 15, 0.04);
+}
+
+.dpe-atlas .dpe-topbar {
+  background: #fbfbfa;
+  box-shadow: 0 1px 0 #e8e7e4;
+}
+
+.dpe-atlas .dpe-panel,
+.dpe-atlas .dpe-sidebar,
+.dpe-atlas .dpe-group-main,
+.dpe-atlas .dpe-inspector,
+.dpe-atlas .dpe-hero-card {
+  box-shadow: var(--dpe-shadow);
+  border-color: #e8e7e4;
+}
+
+.dpe-atlas .dpe-group-layout {
+  grid-template-columns: 260px 1fr 320px;
+}
+
+.dpe-atlas .dpe-sidebar {
+  background: #ffffff;
+  border-left: 3px solid var(--dpe-accent);
+}
+
+.dpe-atlas .dpe-tabs button.is-active {
+  background: #e8f4fc;
+  border-radius: var(--dpe-radius-sm);
+  border-bottom: none;
+}
+
+.dpe-atlas .dpe-btn {
+  border-radius: 8px;
+}
+
+.dpe-atlas .dpe-btn--primary {
+  border-radius: 8px;
+}
+
+.dpe-atlas .dpe-page-header h1 {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}

@@ -1,0 +1,21 @@
+/* GitHub-like: default tokens already match — subtle refinements */
+.dpe-github {
+  --dpe-accent: #0969da;
+  --dpe-surface: #f6f8fa;
+}
+
+.dpe-github .dpe-topbar {
+  background: #f6f8fa;
+}
+
+.dpe-github .dpe-list-item:hover {
+  background: #f6f8fa;
+}
+
+.dpe-github .dpe-panel h2 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 0.75rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--dpe-border);
+}

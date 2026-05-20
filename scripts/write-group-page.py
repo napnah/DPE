@@ -1,4 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+# -*- coding: utf-8 -*-
+from pathlib import Path
+
+GROUP_PAGE = r'''import { useCallback, useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { isFolderDoc } from "@dpe/shared";
 import { DocTreeNav, ROOT_DOC_ID } from "../components/DocTreeNav";
@@ -231,3 +234,8 @@ export default function GroupPage() {
     </main>
   );
 }
+'''
+
+path = Path(__file__).resolve().parents[1] / "apps/web/src/pages/GroupPage.tsx"
+path.write_text(GROUP_PAGE, encoding="utf-8", newline="\n")
+print("wrote", path)

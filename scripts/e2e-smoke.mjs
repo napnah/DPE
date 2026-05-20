@@ -106,6 +106,33 @@ export async function runE2eSmoke(opts = {}) {
   if (!rootNode?.isFolder) throw new Error("root must be folder in tree API");
   if (!childNode) throw new Error("member cannot see child doc after SetACL");
 
+  const subFolderId = crypto.randomUUID();
+  const subFolderRes = await rpc(owner.nodeId, {
+    op: "CreateChild",
+    parent_doc_id: "root",
+    doc_id: subFolderId,
+    title: "E2E Chapter",
+    is_folder: true,
+  });
+  if (!subFolderRes.ok) throw new Error(`CreateChild folder: ${subFolderRes.status} ${await subFolderRes.text()}`);
+  const nestedDocId = crypto.randomUUID();
+  const nestedRes = await rpc(owner.nodeId, {
+    op: "CreateChild",
+    parent_doc_id: subFolderId,
+    doc_id: nestedDocId,
+    title: "Nested Doc",
+  });
+  if (!nestedRes.ok) throw new Error(`CreateChild nested: ${nestedRes.status}`);
+  const ownerTree = await fetch(
+    `${base}/groups/${groupId}/tree?node_id=${encodeURIComponent(owner.nodeId)}`,
+  ).then((r) => r.json());
+  const folderNode = ownerTree.nodes?.find((n) => n.docId === subFolderId);
+  if (!folderNode?.isFolder) throw new Error("subfolder must have isFolder=true");
+  const nestedNode = ownerTree.nodes?.find((n) => n.docId === nestedDocId);
+  if (!nestedNode || nestedNode.parentDocId !== subFolderId) {
+    throw new Error("nested doc parent must be subfolder");
+  }
+
   const denyRes = await rpc(member.nodeId, {
     op: "CreateChild",
     parent_doc_id: "root",

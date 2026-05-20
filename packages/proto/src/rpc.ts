@@ -9,11 +9,20 @@ export const setAclRpcSchema = z.object({
   role: roleSchema,
 });
 
+export const setDocRoleAclRpcSchema = z.object({
+  op: z.literal("SetDocRoleAcl"),
+  doc_id: z.string(),
+  group_role_id: z.string(),
+  access_level: roleSchema,
+});
+
 export const createChildRpcSchema = z.object({
   op: z.literal("CreateChild"),
   parent_doc_id: z.string(),
   doc_id: z.string(),
   title: z.string().optional(),
+  /** When true, creates a folder (no Yjs editor); children may be nested under it. */
+  is_folder: z.boolean().optional(),
 });
 
 export const deleteDocRpcSchema = z.object({
@@ -23,6 +32,7 @@ export const deleteDocRpcSchema = z.object({
 
 export const operableRpcSchema = z.discriminatedUnion("op", [
   setAclRpcSchema,
+  setDocRoleAclRpcSchema,
   createChildRpcSchema,
   deleteDocRpcSchema,
 ]);
