@@ -117,8 +117,8 @@ async function lanAgentSmoke() {
 async function main() {
   run("node", ["scripts/verify-p2.mjs"], "P2 baseline");
 
-  run("pnpm", ["--filter", "@dpe/p2p", "test"], "p2p tests");
-  run("pnpm", ["--filter", "@dpe/p2p", "build"], "p2p build");
+  run("pnpm", ["turbo", "run", "build", "--filter", "@dpe/p2p"], "p2p build");
+  run("pnpm", ["turbo", "run", "test", "--filter", "@dpe/p2p"], "p2p tests");
   run("pnpm", ["--filter", "@dpe/signaling", "build"], "signaling build");
   run("pnpm", ["--filter", "@dpe/lan-agent", "build"], "lan-agent build");
 

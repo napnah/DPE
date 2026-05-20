@@ -20,8 +20,8 @@ function run(cmd, args, label, cwd = root) {
 
 function main() {
   run("node", ["scripts/verify-p3.mjs"], "P3 baseline");
-  run("pnpm", ["--filter", "@dpe/yjs-provider", "test"], "yjs-provider tests");
-  run("pnpm", ["--filter", "@dpe/yjs-provider", "build"], "yjs-provider build");
+  run("pnpm", ["turbo", "run", "build", "--filter", "@dpe/yjs-provider"], "yjs-provider build");
+  run("pnpm", ["turbo", "run", "test", "--filter", "@dpe/yjs-provider"], "yjs-provider tests");
   console.log("\nP4 verification passed.");
 }
 

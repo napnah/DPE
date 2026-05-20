@@ -20,10 +20,11 @@ function run(cmd, args, label) {
 
 async function main() {
   run("pnpm", ["--filter", "@dpe/proto", "test"], "proto tests");
-  run("pnpm", ["--filter", "@dpe/crypto", "test"], "crypto tests");
-  run("pnpm", ["--filter", "@dpe/acl", "test"], "acl tests");
   run("pnpm", ["--filter", "@dpe/proto", "build"], "proto build");
+  run("pnpm", ["--filter", "@dpe/shared", "build"], "shared build");
+  run("pnpm", ["--filter", "@dpe/crypto", "test"], "crypto tests");
   run("pnpm", ["--filter", "@dpe/crypto", "build"], "crypto build");
+  run("pnpm", ["--filter", "@dpe/acl", "test"], "acl tests");
   run("pnpm", ["--filter", "@dpe/acl", "build"], "acl build");
 
   if (process.argv.includes("--health")) {
