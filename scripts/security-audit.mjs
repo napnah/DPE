@@ -45,12 +45,21 @@ mustMatch("packages/yjs-provider/src/secure-provider.ts", /validateAndDecryptInc
 mustMatch("packages/p2p/src/auth-handshake.ts", /acceptAuthEnvelope/, "P2P AuthEnvelope handshake");
 mustMatch("packages/p2p/src/auth-handshake.ts", /verifyJwt/, "P2P verifies JWT with pinned admin key");
 
-// Web: trust refresh + root folder; avoid stale pk_admin verify on editor.
-mustMatch("apps/web/src/pages/DocEditorPage.tsx", /parseJwtPayload/, "editor parses JWT after control-plane refresh");
+// Web: trust refresh + root folder; inline editor on group page (DocEditorPage redirects).
+mustMatch(
+  "apps/web/src/components/DocInlineEditor.tsx",
+  /parseJwtPayload/,
+  "inline editor parses JWT after control-plane refresh",
+);
 mustNotMatch(
-  "apps/web/src/pages/DocEditorPage.tsx",
+  "apps/web/src/components/DocInlineEditor.tsx",
   /verifyJwt\s*\(/,
   "editor must not verifyJwt with pinned pk (ephemeral issuer breaks)",
+);
+mustMatch(
+  "apps/web/src/pages/DocEditorPage.tsx",
+  /Navigate/,
+  "legacy /docs/:id routes redirect to group workspace",
 );
 mustMatch(
   "apps/web/src/pages/GroupPage.tsx",

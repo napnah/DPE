@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * End-to-end API smoke: group lifecycle, invite, CreateChild, SetACL, JWT, tree.
+ * End-to-end API smoke: group lifecycle, invite, CreateChild, SetDocRoleAcl, JWT, tree.
  * Expects control-plane listening (see verify-p6 --live).
  */
 import { config } from "dotenv";
@@ -71,13 +71,23 @@ export async function runE2eSmoke(opts = {}) {
   });
   if (!createChildRes.ok) throw new Error(`CreateChild: ${createChildRes.status} ${await createChildRes.text()}`);
 
-  const setAclRes = await rpc(owner.nodeId, {
-    op: "SetACL",
+  const govRes = await fetch(
+    `${base}/groups/${groupId}/governance?caller_node_id=${encodeURIComponent(owner.nodeId)}`,
+  );
+  if (!govRes.ok) throw new Error(`governance: ${govRes.status} ${await govRes.text()}`);
+  const gov = await govRes.json();
+  const readerRole = gov.roles?.find((r) => r.slug === "reader");
+  if (!readerRole?.id) throw new Error("governance missing reader role");
+
+  const setDocRoleAclRes = await rpc(owner.nodeId, {
+    op: "SetDocRoleAcl",
     doc_id: childDocId,
-    user_node_id: member.nodeId,
-    role: 2,
+    group_role_id: readerRole.id,
+    access_level: 2,
   });
-  if (!setAclRes.ok) throw new Error(`SetACL: ${setAclRes.status}`);
+  if (!setDocRoleAclRes.ok) {
+    throw new Error(`SetDocRoleAcl: ${setDocRoleAclRes.status} ${await setDocRoleAclRes.text()}`);
+  }
 
   const memberJwtRes = await fetch(`${base}/groups/${groupId}/jwt/refresh`, {
     method: "POST",
@@ -104,7 +114,7 @@ export async function runE2eSmoke(opts = {}) {
   const rootNode = tree.nodes?.find((n) => n.docId === "root");
   const childNode = tree.nodes?.find((n) => n.docId === childDocId);
   if (!rootNode?.isFolder) throw new Error("root must be folder in tree API");
-  if (!childNode) throw new Error("member cannot see child doc after SetACL");
+  if (!childNode) throw new Error("member cannot see child doc after SetDocRoleAcl");
 
   const subFolderId = crypto.randomUUID();
   const subFolderRes = await rpc(owner.nodeId, {
@@ -152,7 +162,7 @@ export async function runE2eSmoke(opts = {}) {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   runE2eSmoke()
     .then(() => {
-      console.log("OK: E2E API smoke (group → invite → doc → ACL → JWT → tree)");
+      console.log("OK: E2E API smoke (group → invite → doc → SetDocRoleAcl → JWT → tree)");
     })
     .catch((e) => {
       console.error(e);
