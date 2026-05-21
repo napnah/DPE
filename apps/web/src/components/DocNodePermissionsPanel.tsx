@@ -152,7 +152,12 @@ export function DocNodePermissionsPanel({
                       <select
                         className="app-select"
                         value={r.access_level}
-                        disabled={loading}
+                        disabled={loading || r.acl_editable === false}
+                        title={
+                          r.acl_editable === false
+                            ? "可操作级别角色不可被非群主修改"
+                            : undefined
+                        }
                         onChange={(e) => void setDocRoleAcl(r.id, Number(e.target.value))}
                       >
                         {Object.entries(ROLE_LABELS).map(([v, label]) => (

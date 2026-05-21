@@ -11,7 +11,8 @@ import { PrismaService } from "../prisma/prisma.service.js";
 import { SigningService } from "../crypto/signing.service.js";
 import { ROOT_DOC_ID } from "@dpe/shared";
 import {
-  applyCreateChildTemplate,
+  canEditDocRoleAcl,
+  inheritParentDocAcl,
   resolveAccessLevel,
   resolveMyRolesOnDoc,
   ensureGroupRbac,
@@ -431,7 +432,18 @@ export class GroupsService {
     const rpc = operableRpcSchema.parse(body);
 
     if (rpc.op === "SetDocRoleAcl") {
-      await this.requireOperable(groupId, callerNodeId, rpc.doc_id);
+      const group = await this.requireGroup(groupId);
+      const callerLevel = await resolveAccessLevel(
+        this.prisma,
+        groupId,
+        callerNodeId,
+        rpc.doc_id,
+        group.ownerNodeId,
+      );
+      const isOwner = group.ownerNodeId === callerNodeId;
+      if (!isOwner && callerLevel < 3) {
+        throw new ForbiddenException("operable role required on doc");
+      }
       const doc = await this.prisma.docNode.findUnique({
         where: { groupId_docId: { groupId, docId: rpc.doc_id } },
       });
@@ -440,6 +452,19 @@ export class GroupsService {
         where: { id: rpc.group_role_id, groupId },
       });
       if (!role) throw new NotFoundException("group role not found");
+      const existing = await this.prisma.docRoleAcl.findUnique({
+        where: {
+          groupId_docId_roleId: {
+            groupId,
+            docId: rpc.doc_id,
+            roleId: rpc.group_role_id,
+          },
+        },
+      });
+      const targetLevel = existing?.accessLevel ?? 0;
+      if (!canEditDocRoleAcl(isOwner, callerLevel, targetLevel)) {
+        throw new ForbiddenException("cannot change ACL for operable-level roles");
+      }
       await this.prisma.$transaction(async (tx) => {
         await tx.docRoleAcl.upsert({
           where: {
@@ -504,19 +529,16 @@ export class GroupsService {
           keyBase64: bytesToBase64Url(newKey),
         },
       });
-      const rules = await this.prisma.groupDefaultRules.findUnique({ where: { groupId } });
       const group = await this.requireGroup(groupId);
-      if (rules) {
-        const template = rules.createChildTemplate as Record<string, number>;
-        await this.prisma.$transaction(async (tx) => {
-          await applyCreateChildTemplate(tx, groupId, rpc.doc_id, template);
-          await syncMemberDocGrant(tx, groupId, callerNodeId, rpc.doc_id, 3);
-          const members = await tx.memberRoleAssignment.findMany({ where: { groupId } });
-          for (const m of members) {
-            await syncMemberAllDocs(tx, groupId, m.nodeId, group.ownerNodeId);
-          }
-        });
-      }
+      await this.prisma.$transaction(async (tx) => {
+        await inheritParentDocAcl(
+          tx,
+          groupId,
+          rpc.parent_doc_id,
+          rpc.doc_id,
+          group.ownerNodeId,
+        );
+      });
       return { ok: true, doc_id: rpc.doc_id };
     }
 
@@ -814,12 +836,16 @@ export class GroupsService {
       my_access_level: level,
       my_roles,
       can_manage_acl: isOwner || level >= 3,
-      roles: roles.map((r) => ({
-        id: r.id,
-        name: r.name,
-        color: r.color,
-        access_level: byRole[r.id] ?? 0,
-      })),
+      roles: roles.map((r) => {
+        const access_level = byRole[r.id] ?? 0;
+        return {
+          id: r.id,
+          name: r.name,
+          color: r.color,
+          access_level,
+          acl_editable: canEditDocRoleAcl(isOwner, level, access_level),
+        };
+      }),
     };
   }
 

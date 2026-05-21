@@ -32,7 +32,6 @@ export default function GroupPage() {
   const meshBusyRef = useRef(false);
 
   const selectedNode = nodes.find((n) => n.docId === selectedId);
-  const parentIsFolder = selectedNode ? isFolder(selectedNode) : true;
   const selectedIsFolder = selectedNode ? isFolder(selectedNode) : true;
 
   useEffect(() => {
@@ -178,8 +177,12 @@ export default function GroupPage() {
   }
 
   async function createChild(is_folder: boolean) {
-    if (!nodeId || !parentIsFolder) return;
-    const parentId = selectedIsFolder ? selectedId : (selectedNode?.parentDocId ?? ROOT_DOC_ID);
+    if (!nodeId) return;
+    const parentId = selectedIsFolder
+      ? selectedId
+      : (selectedNode?.parentDocId ?? ROOT_DOC_ID);
+    const parent = nodes.find((n) => n.docId === parentId);
+    if (!parent || !isFolder(parent)) return;
     const doc_id = crypto.randomUUID();
     try {
       await api.createChild(gid, nodeId, {

@@ -110,6 +110,45 @@ export async function applyCreateChildTemplate(
   }
 }
 
+
+/** Copy parent doc role ACL rows onto a newly created child doc. */
+export async function inheritParentDocAcl(
+  tx: Tx,
+  groupId: string,
+  parentDocId: string,
+  childDocId: string,
+  ownerNodeId: string,
+) {
+  const parentAcls = await tx.docRoleAcl.findMany({
+    where: { groupId, docId: parentDocId },
+  });
+  for (const row of parentAcls) {
+    await tx.docRoleAcl.create({
+      data: {
+        groupId,
+        docId: childDocId,
+        roleId: row.roleId,
+        accessLevel: row.accessLevel,
+      },
+    });
+  }
+  const members = await tx.memberRoleAssignment.findMany({ where: { groupId } });
+  for (const m of members) {
+    await syncMemberAllDocs(tx, groupId, m.nodeId, ownerNodeId);
+  }
+}
+
+/** Operable (level 3) callers may only change ACL for roles currently below operable on this doc. */
+export function canEditDocRoleAcl(
+  callerIsOwner: boolean,
+  callerLevel: number,
+  targetRoleLevel: number,
+): boolean {
+  if (callerIsOwner) return true;
+  if (callerLevel < 3) return false;
+  return targetRoleLevel < 3;
+}
+
 export async function syncMemberDocGrant(
   tx: Tx,
   groupId: string,

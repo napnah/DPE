@@ -56,7 +56,6 @@ export default function GroupSettingsPage() {
       await api.updateGovernance(gid, {
         caller_node_id: nodeId,
         default_member_role_id: gov.default_rules.default_member_role_id,
-        create_child_template: gov.default_rules.create_child_template,
       });
       setToast("默认规则已保存");
       await load();
@@ -180,7 +179,7 @@ export default function GroupSettingsPage() {
             <span> / 群组设置</span>
           </p>
           <h1>群组设置</h1>
-          <p className="app-muted">角色定义、成员多角色、新建子项默认权限模板、邀请成员</p>
+          <p className="app-muted">角色定义、成员多角色、新成员默认角色、邀请成员</p>
         </div>
       </header>
 
@@ -277,10 +276,10 @@ export default function GroupSettingsPage() {
           </section>
 
           <section className="app-panel">
-            <h2>新建子项默认权限模板</h2>
-            <p className="app-muted">按「群组角色 → 权限级别」配置；新建目录/文档时自动套用。</p>
+            <h2>新成员默认角色</h2>
+            <p className="app-muted">入群时自动分配的角色；新建目录/文档将继承父节点 ACL。</p>
             <label className="app-field">
-              <span>新成员默认角色（入群时自动分配）</span>
+              <span>默认角色</span>
               <select
                 className="app-select"
                 disabled={busy || !gov.default_rules}
@@ -301,36 +300,8 @@ export default function GroupSettingsPage() {
                 ))}
               </select>
             </label>
-            <ul className="app-template-list">
-              {gov.roles.map((r) => (
-                <li key={r.id}>
-                  <span style={{ color: r.color, fontWeight: 600 }}>{r.name}</span>
-                  <select
-                    className="app-select"
-                    disabled={busy || !gov.default_rules}
-                    value={String(gov.default_rules?.create_child_template?.[r.id] ?? 0)}
-                    onChange={(e) => {
-                      const tpl = { ...(gov.default_rules?.create_child_template ?? {}) };
-                      tpl[r.id] = Number(e.target.value);
-                      setGov({
-                        ...gov,
-                        default_rules: gov.default_rules
-                          ? { ...gov.default_rules, create_child_template: tpl }
-                          : null,
-                      });
-                    }}
-                  >
-                    {Object.entries(ROLE_LABELS).map(([v, label]) => (
-                      <option key={v} value={v}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                </li>
-              ))}
-            </ul>
             <button type="button" className="app-btn app-btn--primary" disabled={busy} onClick={() => void saveRules()}>
-              保存默认模板
+              保存
             </button>
           </section>
 

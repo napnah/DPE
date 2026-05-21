@@ -88,7 +88,13 @@ export type DocRoleAclRow = {
   my_access_level: number;
   my_roles: MyRoleOnDocRow[];
   can_manage_acl: boolean;
-  roles: { id: string; name: string; color: string; access_level: number }[];
+  roles: {
+    id: string;
+    name: string;
+    color: string;
+    access_level: number;
+    acl_editable?: boolean;
+  }[];
 };
 
 export const api = {
