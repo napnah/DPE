@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { CopyableField } from "../components/CopyableField";
+import { MemberRoleAssign } from "../components/MemberRoleAssign";
 import { api, type GovernancePayload } from "../lib/api";
 import { stopGroupMesh } from "../lib/mesh-context";
 import { loadIdentity } from "../lib/identity";
@@ -25,6 +26,7 @@ export default function GroupSettingsPage() {
   const [memberRoles, setMemberRoles] = useState<Record<string, string[]>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [savingMemberId, setSavingMemberId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -107,29 +109,23 @@ export default function GroupSettingsPage() {
     }
   }
 
-  async function saveMemberRoles(memberNodeId: string) {
+  async function persistMemberRoles(memberNodeId: string, roleIds: string[]) {
     if (!nodeId) return;
-    setBusy(true);
+    const previous = memberRoles[memberNodeId] ?? [];
+    setMemberRoles((prev) => ({ ...prev, [memberNodeId]: roleIds }));
+    setSavingMemberId(memberNodeId);
+    setError(null);
     try {
       await api.updateGovernance(gid, {
         caller_node_id: nodeId,
-        member_roles: [{ node_id: memberNodeId, role_ids: memberRoles[memberNodeId] ?? [] }],
+        member_roles: [{ node_id: memberNodeId, role_ids: roleIds }],
       });
-      setToast("成员角色已更新");
-      await load();
     } catch (e) {
+      setMemberRoles((prev) => ({ ...prev, [memberNodeId]: previous }));
       setError(e instanceof Error ? e.message : "保存失败");
     } finally {
-      setBusy(false);
+      setSavingMemberId(null);
     }
-  }
-
-  function toggleMemberRole(memberNodeId: string, roleId: string) {
-    setMemberRoles((prev) => {
-      const cur = prev[memberNodeId] ?? [];
-      const next = cur.includes(roleId) ? cur.filter((id) => id !== roleId) : [...cur, roleId];
-      return { ...prev, [memberNodeId]: next };
-    });
   }
 
   async function dissolveGroup() {
@@ -224,35 +220,40 @@ export default function GroupSettingsPage() {
             <h3>已有角色</h3>
             <ul className="app-role-chips">
               {gov.roles.map((r) => (
-                <li key={r.id} className="app-role-chip-row">
-                  <span className="app-role-chip" style={{ borderColor: r.color, color: r.color }}>
-                    {r.name}
-                    {r.is_builtin ? "（内置）" : ""}
+                <li key={r.id}>
+                  <span
+                    className="app-role-tag"
+                    style={{ borderColor: r.color, color: r.color, background: `${r.color}14` }}
+                  >
+                    <span className="app-role-tag__name">
+                      {r.name}
+                      {r.is_builtin ? "（内置）" : ""}
+                    </span>
+                    {!r.is_builtin && (
+                      <button
+                        type="button"
+                        className="app-role-tag__remove"
+                        disabled={busy}
+                        aria-label={`删除角色 ${r.name}`}
+                        onClick={() => void deleteRole(r.id, r.name)}
+                      >
+                        ×
+                      </button>
+                    )}
                   </span>
-                  {!r.is_builtin && (
-                    <button
-                      type="button"
-                      className="app-btn app-btn--small app-btn--danger"
-                      disabled={busy}
-                      onClick={() => void deleteRole(r.id, r.name)}
-                    >
-                      删除
-                    </button>
-                  )}
                 </li>
               ))}
             </ul>
           </section>
 
           <section className="app-panel">
-            <h2>成员 · 角色（可多选）</h2>
-            <p className="app-muted">勾选后点击「保存」生效；未保存前切换页面会丢失修改。</p>
-            <table className="app-table">
+            <h2>成员 · 角色</h2>
+            <p className="app-muted">使用「添加」分配角色，点击标签上的 × 移除；修改后立即保存。</p>
+            <table className="app-table app-table--member-roles">
               <thead>
                 <tr>
                   <th>成员</th>
                   <th>群组角色</th>
-                  <th />
                 </tr>
               </thead>
               <tbody>
@@ -262,29 +263,12 @@ export default function GroupSettingsPage() {
                       <strong>{memberDisplayLabel(m, nodeId)}</strong>
                     </td>
                     <td>
-                      <div className="app-role-checkboxes">
-                        {gov.roles.map((r) => (
-                          <label key={r.id} className="app-role-check">
-                            <input
-                              type="checkbox"
-                              checked={(memberRoles[m.node_id] ?? []).includes(r.id)}
-                              disabled={busy}
-                              onChange={() => toggleMemberRole(m.node_id, r.id)}
-                            />
-                            <span style={{ color: r.color }}>{r.name}</span>
-                          </label>
-                        ))}
-                      </div>
-                    </td>
-                    <td>
-                      <button
-                        type="button"
-                        className="app-btn app-btn--small"
-                        disabled={busy}
-                        onClick={() => void saveMemberRoles(m.node_id)}
-                      >
-                        保存
-                      </button>
+                      <MemberRoleAssign
+                        roles={gov.roles.map((r) => ({ id: r.id, name: r.name, color: r.color }))}
+                        assignedRoleIds={memberRoles[m.node_id] ?? []}
+                        disabled={busy || savingMemberId === m.node_id}
+                        onChange={(roleIds) => void persistMemberRoles(m.node_id, roleIds)}
+                      />
                     </td>
                   </tr>
                 ))}

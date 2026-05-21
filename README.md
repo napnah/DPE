@@ -101,6 +101,7 @@ scripts/            verify-p*.mjs、e2e-smoke、security-audit
 | 现象 | 处理 |
 |------|------|
 | 无法连接 lan-agent | 确认 `pnpm dev` 已启动；检查 `.env` 中 `VITE_LAN_AGENT_URL` |
+| 用 `http://192.168.x.x:5173` 打开文档报 `importKey` | 非安全上下文无 `crypto.subtle`；已用 `@noble/ciphers` 兜底，需重启 `pnpm dev` 并刷新 |
 | P2P 信令未连接 | 群组页点「重试信令」；确认 signaling :3002 可达 |
 | 文档加载 / 签名失败 | 重新建群或入群以刷新 `pk_admin`；勿直接打开 `docs/root`（根为目录） |
 | `prisma generate` EPERM（Windows） | 先关闭占用 Prisma 的 `pnpm dev`，再 `cd apps/control-plane && pnpm db:generate:safe` |

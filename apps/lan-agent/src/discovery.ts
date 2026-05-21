@@ -1,12 +1,14 @@
 import { Bonjour, type Service } from "bonjour-service";
 import { DPE_MDNS_SERVICE_TYPE } from "@dpe/p2p";
+import { probeLanAgents } from "./probe.js";
+import { parseProbeHosts } from "./network.js";
 
 export type LanPeer = {
   uid: string;
   host: string;
   port: number;
   name?: string;
-  source: "mdns" | "manual";
+  source: "mdns" | "manual" | "probe";
   lastSeen: number;
 };
 
@@ -32,7 +34,6 @@ function parseManualPeers(raw: string | undefined): LanPeer[] {
   for (const part of raw.split(/[,;\s]+/)) {
     const trimmed = part.trim();
     if (!trimmed) continue;
-    // uid@host:port or host:port (uid = host)
     const at = trimmed.indexOf("@");
     let uid: string;
     let hostPort: string;
@@ -55,12 +56,23 @@ function parseManualPeers(raw: string | undefined): LanPeer[] {
 
 export function createDiscovery(
   identity: LocalAgentIdentity,
-  options?: { manualPeersEnv?: string; enableMdns?: boolean },
+  options?: {
+    manualPeersEnv?: string;
+    probeHostsEnv?: string;
+    enableMdns?: boolean;
+    mdnsInterface?: string;
+  },
 ): DiscoveryAdapter {
   const enableMdns = options?.enableMdns ?? process.env.DPE_DISABLE_MDNS !== "1";
   const manual = parseManualPeers(
     options?.manualPeersEnv ?? process.env.DPE_MANUAL_PEERS,
   );
+  const probeHosts = parseProbeHosts(
+    options?.probeHostsEnv ?? process.env.DPE_DISCOVERY_PROBE_HOSTS,
+    identity.port,
+  );
+  const mdnsInterface = options?.mdnsInterface;
+
   const byUid = new Map<string, LanPeer>();
   for (const p of manual) byUid.set(p.uid.toLowerCase(), p);
 
@@ -68,22 +80,41 @@ export function createDiscovery(
   let bonjour: Bonjour | null = null;
   let publish: Service | null = null;
   let browser: ReturnType<Bonjour["find"]> | null = null;
+  let probeTimer: ReturnType<typeof setInterval> | null = null;
 
   const emit = () => {
     const peers = [...byUid.values()].sort((a, b) => a.uid.localeCompare(b.uid));
     for (const h of handlers) h(peers);
   };
 
-  const upsert = (peer: LanPeer) => {
-    byUid.set(peer.uid.toLowerCase(), peer);
+  const upsert = (peer: LanPeer, preferSource?: LanPeer["source"]) => {
+    const key = peer.uid.toLowerCase();
+    const existing = byUid.get(key);
+    if (existing && existing.source === "manual" && preferSource !== "manual") {
+      return;
+    }
+    byUid.set(key, { ...peer, lastSeen: Date.now() });
     emit();
+  };
+
+  const runProbe = async () => {
+    if (probeHosts.length === 0) return;
+    const found = await probeLanAgents(probeHosts, identity.port, identity.uid);
+    for (const p of found) {
+      upsert({ ...p, source: "probe", lastSeen: Date.now() });
+    }
   };
 
   return {
     start() {
       if (enableMdns) {
         try {
-          bonjour = new Bonjour();
+          // multicast-dns accepts `interface`; types on bonjour-service omit it.
+          bonjour = new Bonjour(
+            (mdnsInterface ? { interface: mdnsInterface } : undefined) as ConstructorParameters<
+              typeof Bonjour
+            >[0],
+          );
           publish = bonjour.publish({
             name: identity.displayName,
             type: DPE_MDNS_SERVICE_TYPE,
@@ -96,6 +127,7 @@ export function createDiscovery(
             if (!uid || uid === identity.uid) return;
             const host =
               (svc.referer?.address as string | undefined) ??
+              svc.txt?.host ??
               svc.host ??
               svc.addresses?.[0];
             if (!host) return;
@@ -122,9 +154,17 @@ export function createDiscovery(
           console.warn("[lan-agent] mDNS unavailable:", e);
         }
       }
+
+      if (probeHosts.length > 0) {
+        void runProbe();
+        probeTimer = setInterval(() => void runProbe(), 15_000);
+      }
+
       emit();
     },
     stop() {
+      if (probeTimer) clearInterval(probeTimer);
+      probeTimer = null;
       browser?.stop();
       publish?.stop?.();
       bonjour?.destroy();
@@ -134,11 +174,14 @@ export function createDiscovery(
     },
     getPeers: () => [...byUid.values()],
     registerManual(peer) {
-      upsert({
-        ...peer,
-        source: "manual",
-        lastSeen: Date.now(),
-      });
+      upsert(
+        {
+          ...peer,
+          source: "manual",
+          lastSeen: Date.now(),
+        },
+        "manual",
+      );
     },
     onUpdate(handler) {
       handlers.add(handler);

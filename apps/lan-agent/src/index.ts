@@ -1,28 +1,32 @@
+import "./load-env.js";
 import os from "node:os";
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
 import { createDiscovery, type LanPeer } from "./discovery.js";
 import { registerCors } from "./cors.js";
-
-function pickLanAddress(): string {
-  for (const ifaces of Object.values(os.networkInterfaces())) {
-    for (const i of ifaces ?? []) {
-      if (i && !i.internal && i.family === "IPv4") return i.address;
-    }
-  }
-  return "127.0.0.1";
-}
+import { pickLanAddress, resolveMdnsInterface } from "./network.js";
 
 async function main() {
   const port = Number(process.env.LAN_AGENT_PORT ?? 3003);
   const uid = process.env.DPE_NODE_ID ?? `local-${os.hostname()}`;
   const displayName = process.env.DPE_AGENT_NAME ?? os.hostname();
-  const host = process.env.DPE_AGENT_HOST ?? pickLanAddress();
+  const host = pickLanAddress();
+  const mdnsInterface = resolveMdnsInterface(host);
   const signalingUrl =
     process.env.DPE_SIGNALING_URL ?? "ws://127.0.0.1:3002/ws";
 
-  const discovery = createDiscovery({ uid, displayName, port, host });
+  const discovery = createDiscovery(
+    { uid, displayName, port, host: process.env.DPE_AGENT_HOST?.trim() || host },
+    { mdnsInterface },
+  );
   discovery.start();
+
+  console.log(
+    `[lan-agent] listening 0.0.0.0:${port} node_id=${uid} agentHost=${process.env.DPE_AGENT_HOST?.trim() || host} mdnsInterface=${mdnsInterface ?? "all"}`,
+  );
+  if (process.env.DPE_DISCOVERY_PROBE_HOSTS?.trim()) {
+    console.log(`[lan-agent] probe hosts: ${process.env.DPE_DISCOVERY_PROBE_HOSTS}`);
+  }
 
   let peers: LanPeer[] = discovery.getPeers();
   const wsClients = new Set<{ send: (s: string) => void }>();
@@ -52,6 +56,8 @@ async function main() {
     service: "lan-agent",
     status: "ok",
     node_id: uid,
+    agent_host: process.env.DPE_AGENT_HOST?.trim() || host,
+    mdns_interface: mdnsInterface ?? null,
     signaling_url: signalingUrl,
     endpoints: {
       health: "/health",
@@ -61,7 +67,7 @@ async function main() {
       manual_peer: "POST /peers/manual",
       websocket: "/ws",
     },
-    hint: "Set DPE_MANUAL_PEERS=uid@host:port for mDNS fallback.",
+    hint: "Set DPE_DISCOVERY_PROBE_HOSTS=ip,... when mDNS is one-way (VM NAT). DPE_MANUAL_PEERS=uid@host:port for static peers.",
   }));
 
   app.get("/health", async () => ({
@@ -75,7 +81,8 @@ async function main() {
     hostname: os.hostname(),
     node_id: uid,
     agentPort: port,
-    agentHost: host,
+    agentHost: process.env.DPE_AGENT_HOST?.trim() || host,
+    mdnsInterface: mdnsInterface ?? null,
     signalingUrl,
     interfaces: Object.values(os.networkInterfaces())
       .flat()
@@ -137,7 +144,6 @@ async function main() {
   });
 
   await app.listen({ port, host: "0.0.0.0" });
-  console.log(`lan-agent on ${port} (node_id=${uid})`);
 }
 
 main().catch((e) => {

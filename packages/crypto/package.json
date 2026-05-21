@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@dpe/proto": "workspace:*",
+    "@noble/ciphers": "^2.2.0",
     "@noble/curves": "^1.9.2",
     "@noble/hashes": "^1.6.1",
     "jose": "^5.9.6"
