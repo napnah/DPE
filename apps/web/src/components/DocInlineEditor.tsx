@@ -189,6 +189,11 @@ export function DocInlineEditor({
           onPeerRejected: (_nodeId, reason) => {
             markRealtimeReject(reason);
           },
+          onError: (err) => {
+            markRealtimeReject(
+              `provider_error:${err instanceof Error ? err.message : String(err)}`,
+            );
+          },
         });
 
         getActiveMesh()?.attachProvider(provider);
