@@ -1,3 +1,16 @@
+x-dpe-app-image: &dpe-app-image
+  image: dpe-app
+
+x-dpe-app-build: &dpe-app-build
+  <<: *dpe-app-image
+  build:
+    context: .
+    dockerfile: infra/docker/app.Dockerfile
+    args:
+      VITE_API_URL: http://localhost:3001
+      VITE_SIGNALING_URL: ws://localhost:3002/ws
+      VITE_LAN_AGENT_URL: http://localhost:3003
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -9,30 +22,84 @@ services:
       - "5432:5432"
     volumes:
       - dpe_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dpe -d dpe"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
   control-plane:
-    build:
-      context: .
-      dockerfile: infra/docker/control-plane.Dockerfile
+    <<: *dpe-app-image
     ports:
       - "3001:3001"
     environment:
       DATABASE_URL: postgresql://dpe:dpe@postgres:5432/dpe
       REDIS_URL: redis://redis:6379
       PORT: "3001"
+      DPE_PROXY_BASE_URL: http://localhost:3001
+    command: sh -c "pnpm --filter @dpe/control-plane db:push && node apps/control-plane/dist/main.js"
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3001/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
   signaling:
-    build:
-      context: .
-      dockerfile: infra/docker/signaling.Dockerfile
+    <<: *dpe-app-image
     ports:
       - "3002:3002"
     environment:
-      PORT: "3002"
+      SIGNALING_PORT: "3002"
+    command: node apps/signaling/dist/index.js
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3002/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+  lan-agent:
+    <<: *dpe-app-image
+    ports:
+      - "3003:3003"
+    environment:
+      LAN_AGENT_PORT: "3003"
+      DPE_SIGNALING_URL: ws://signaling:3002/ws
+    command: node apps/lan-agent/dist/index.js
+    depends_on:
+      signaling:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3003/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+  web:
+    <<: *dpe-app-build
+    ports:
+      - "5173:5173"
+    command: pnpm --filter @dpe/web preview --host 0.0.0.0 --port 5173
+    depends_on:
+      control-plane:
+        condition: service_healthy
+      signaling:
+        condition: service_healthy
+      lan-agent:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5173"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
 volumes:
   dpe_pg:

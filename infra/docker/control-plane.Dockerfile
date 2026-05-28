@@ -6,5 +6,5 @@ COPY apps/control-plane/package.json apps/control-plane/
 COPY packages ./packages
 RUN pnpm install --frozen-lockfile || pnpm install
 COPY . .
-RUN pnpm --filter @dpe/control-plane build
+RUN pnpm --filter @dpe/control-plane... build
 CMD ["node", "apps/control-plane/dist/main.js"]
