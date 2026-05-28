@@ -7,6 +7,7 @@ import type { AuthEnvelope } from "@dpe/proto";
 import { authEnvelopeSchema } from "@dpe/proto";
 import { SecureYjsProvider, type PeerSession } from "@dpe/yjs-provider";
 import { base64UrlToBytes } from "@dpe/crypto";
+import { markRealtimeAuthError, markRealtimeRx, markRealtimeTx } from "./realtime-debug";
 
 function signalingUrl(): string {
   const raw = import.meta.env.VITE_SIGNALING_URL ?? "ws://localhost:3002/ws";
@@ -47,8 +48,15 @@ export class GroupP2pMesh {
   }
 
   broadcast(text: string): void {
+    const bytes = new TextEncoder().encode(text).byteLength;
     for (const ch of this.channels.values()) {
-      if (ch.readyState === "open") ch.send(text);
+      if (ch.readyState !== "open") continue;
+      try {
+        ch.send(text);
+        markRealtimeTx(bytes);
+      } catch {
+        markRealtimeAuthError("broadcast_send_failed");
+      }
     }
   }
 
@@ -214,21 +222,40 @@ export class GroupP2pMesh {
 
     const sendAuth = async () => {
       if (sentAuth) return;
-      sentAuth = true;
+      if (channel.readyState !== "open") {
+        markRealtimeAuthError("auth_not_open_before_jwt");
+        return;
+      }
       const jwt = await this.config.getJwt();
+      if (channel.readyState !== "open") {
+        markRealtimeAuthError("auth_not_open_after_jwt");
+        return;
+      }
       const envelope: AuthEnvelope = {
         type: "auth",
         node_id: this.config.nodeId,
         jwt,
       };
-      channel.send(serializeAuthEnvelope(envelope));
+      try {
+        channel.send(serializeAuthEnvelope(envelope));
+        sentAuth = true;
+      } catch {
+        // Channel may race from open -> closing; let later events retry safely.
+        markRealtimeAuthError("auth_send_failed");
+      }
     };
 
-    channel.onopen = () => void sendAuth();
+    channel.onopen = () => {
+      void sendAuth().catch(() => {
+        /* ignore auth race errors */
+      });
+    };
     channel.onclose = () => this.channels.delete(peerId);
 
     channel.onmessage = (ev) => {
-      void this.onChannelMessage(peerId, channel, String(ev.data), () => sendAuth());
+      void this.onChannelMessage(peerId, channel, String(ev.data), () => sendAuth()).catch(() => {
+        /* ignore per-message channel races */
+      });
     };
   }
 
@@ -263,6 +290,7 @@ export class GroupP2pMesh {
       return;
     }
 
+    markRealtimeRx(new TextEncoder().encode(text).byteLength);
     for (const p of this.providers) {
       void p.handleWireMessage(text);
     }

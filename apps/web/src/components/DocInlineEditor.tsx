@@ -17,6 +17,7 @@ import {
 } from "../lib/doc-persistence";
 import { loadIdentity, loadPrivateKey } from "../lib/identity";
 import { getActiveMesh } from "../lib/mesh-context";
+import { markRealtimeReject } from "../lib/realtime-debug";
 
 type EditorEngine = {
   doc: Y.Doc;
@@ -27,6 +28,37 @@ type EditorEngine = {
   onDocUpdate: (update: Uint8Array, origin: unknown) => void;
   remoteSaveTimer: ReturnType<typeof setTimeout> | null;
 };
+
+function applyTextareaDeltaToYText(ytext: Y.Text, nextValue: string): void {
+  const prevValue = ytext.toString();
+  if (prevValue === nextValue) return;
+
+  let start = 0;
+  while (
+    start < prevValue.length &&
+    start < nextValue.length &&
+    prevValue[start] === nextValue[start]
+  ) {
+    start += 1;
+  }
+
+  let prevEnd = prevValue.length;
+  let nextEnd = nextValue.length;
+  while (
+    prevEnd > start &&
+    nextEnd > start &&
+    prevValue[prevEnd - 1] === nextValue[nextEnd - 1]
+  ) {
+    prevEnd -= 1;
+    nextEnd -= 1;
+  }
+
+  const deleteLen = prevEnd - start;
+  const insertText = nextValue.slice(start, nextEnd);
+
+  if (deleteLen > 0) ytext.delete(start, deleteLen);
+  if (insertText.length > 0) ytext.insert(start, insertText);
+}
 
 export function DocInlineEditor({
   groupId,
@@ -60,8 +92,7 @@ export function DocInlineEditor({
     const onInput = () => {
       if (el.readOnly) return;
       eng.doc.transact(() => {
-        eng.ytext.delete(0, eng.ytext.length);
-        eng.ytext.insert(0, el.value);
+        applyTextareaDeltaToYText(eng.ytext, el.value);
       });
     };
 
@@ -155,6 +186,9 @@ export function DocInlineEditor({
             keyVersion: session.key_version,
           },
           send: (frame) => getActiveMesh()?.broadcast(frame),
+          onPeerRejected: (_nodeId, reason) => {
+            markRealtimeReject(reason);
+          },
         });
 
         getActiveMesh()?.attachProvider(provider);

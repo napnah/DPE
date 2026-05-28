@@ -7,6 +7,12 @@ import { DocNodePermissionsPanel } from "../components/DocNodePermissionsPanel";
 import { api, loadGroupAdminKey, type DocNodeRow } from "../lib/api";
 import { useIdentity } from "../lib/use-identity";
 import { startGroupMesh, stopGroupMesh } from "../lib/mesh-context";
+import {
+  getRealtimeDebugSnapshot,
+  resetRealtimeDebugSnapshot,
+  subscribeRealtimeDebug,
+  type RealtimeDebugSnapshot,
+} from "../lib/realtime-debug";
 
 function isFolder(n: DocNodeRow) {
   return isFolderDoc(n);
@@ -25,6 +31,7 @@ export default function GroupPage() {
   const [isOwner, setIsOwner] = useState(false);
   const [p2pStatus, setP2pStatus] = useState("未连接");
   const [error, setError] = useState<string | null>(null);
+  const [debug, setDebug] = useState<RealtimeDebugSnapshot>(() => getRealtimeDebugSnapshot());
   const [meshGen, setMeshGen] = useState(0);
   const [newItemTitle, setNewItemTitle] = useState("");
   const [renameTitle, setRenameTitle] = useState("");
@@ -33,6 +40,7 @@ export default function GroupPage() {
 
   const selectedNode = nodes.find((n) => n.docId === selectedId);
   const selectedIsFolder = selectedNode ? isFolder(selectedNode) : true;
+  const syncDocId = selectedIsFolder ? ROOT_DOC_ID : selectedId;
 
   useEffect(() => {
     setRenameTitle(selectedNode?.title ?? "");
@@ -50,6 +58,11 @@ export default function GroupPage() {
     },
     [setSearchParams],
   );
+
+  useEffect(() => {
+    const off = subscribeRealtimeDebug((snapshot) => setDebug(snapshot));
+    return off;
+  }, []);
 
   useEffect(() => {
     if (!nodeId || !gid) return;
@@ -107,7 +120,7 @@ export default function GroupPage() {
           adminPublicKeyBase64Url: pkAdmin,
           memberPublicKeys: memberMap,
           getJwt: async () => {
-            const r = await api.refreshJwt(gid, nodeId, "root");
+            const r = await api.refreshJwt(gid, nodeId, syncDocId);
             return r.jwt;
           },
         });
@@ -129,7 +142,7 @@ export default function GroupPage() {
       meshBusyRef.current = false;
       void stopGroupMesh();
     };
-  }, [gid, nodeId, meshGen]);
+  }, [gid, nodeId, meshGen, syncDocId]);
 
   async function refreshTree() {
     if (!nodeId) return;
@@ -138,6 +151,7 @@ export default function GroupPage() {
   }
 
   function retryP2p() {
+    resetRealtimeDebugSnapshot();
     setMeshGen((n) => n + 1);
   }
 
@@ -242,6 +256,11 @@ export default function GroupPage() {
                 · <Link to={`/groups/${gid}/settings`}>群组设置</Link>
               </>
             )}
+          </p>
+          <p className="app-muted">
+            Debug · tx {debug.txCount}/{debug.txBytes}B · rx {debug.rxCount}/{debug.rxBytes}B
+            {debug.lastRejectReason ? ` · reject=${debug.lastRejectReason}` : ""}
+            {debug.lastAuthError ? ` · authErr=${debug.lastAuthError}` : ""}
           </p>
         </div>
       </header>
