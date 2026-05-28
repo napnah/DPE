@@ -1,4 +1,5 @@
 import {
+  AuthHandshakeError,
   serializeAuthEnvelope,
   validateAuthEnvelopeWithPeerKey,
   type AuthenticatedPeer,
@@ -6,7 +7,7 @@ import {
 import type { AuthEnvelope } from "@dpe/proto";
 import { authEnvelopeSchema } from "@dpe/proto";
 import { SecureYjsProvider, type PeerSession } from "@dpe/yjs-provider";
-import { base64UrlToBytes } from "@dpe/crypto";
+import { base64UrlToBytes, parseJwtPayload } from "@dpe/crypto";
 import {
   markRealtimeAuthError,
   markRealtimePeerStats,
@@ -18,6 +19,20 @@ function signalingUrl(): string {
   const raw = import.meta.env.VITE_SIGNALING_URL ?? "ws://localhost:3002/ws";
   const trimmed = raw.trim().replace(/\/$/, "");
   return trimmed.endsWith("/ws") ? trimmed : `${trimmed}/ws`;
+}
+
+/** Decode the JWT (without verifying signature) to suggest the most likely failure cause. */
+function diagnoseJwtFailure(jwt: string, peerId: string, audience: string): string | null {
+  try {
+    const payload = parseJwtPayload(jwt);
+    const now = Math.floor(Date.now() / 1000);
+    if (payload.aud !== audience) return `aud_mismatch(got=${payload.aud})`;
+    if (payload.sub !== peerId) return "sub_mismatch";
+    if (typeof payload.exp === "number" && payload.exp < now) return "expired";
+    return "signature_or_unknown";
+  } catch {
+    return "jwt_undecodable";
+  }
 }
 
 export type MeshConfig = {
@@ -201,8 +216,14 @@ export class GroupP2pMesh {
 
     if (msg.type !== "signal" || !msg.payload) return;
     const from = String(msg.payload.from ?? "");
-    const pc = this.pcs.get(from);
-    if (!pc) return;
+    let pc = this.pcs.get(from);
+    if (!pc) {
+      // Signal ordering can race: offer may arrive before peers-list driven connectPeer().
+      if (msg.payload.kind !== "offer") return;
+      await this.connectPeer(from, false);
+      pc = this.pcs.get(from);
+      if (!pc) return;
+    }
 
     if (msg.payload.kind === "offer" && msg.payload.sdp) {
       await pc.setRemoteDescription(
@@ -356,7 +377,11 @@ export class GroupP2pMesh {
     if (authParse.success) {
       await ensureAuthSent();
       const peerPk = this.config.memberPublicKeys.get(peerId);
-      if (!peerPk) return;
+      if (!peerPk) {
+        markRealtimeAuthError("peer_public_key_missing");
+        channel.close();
+        return;
+      }
       try {
         const peer = await validateAuthEnvelopeWithPeerKey(authParse.data, {
           adminPublicKeyBase64Url: this.config.adminPublicKeyBase64Url,
@@ -364,7 +389,13 @@ export class GroupP2pMesh {
           peerPublicKeyBase64Url: peerPk,
         });
         this.onPeerAuthed(peer);
-      } catch {
+      } catch (e) {
+        const detail = diagnoseJwtFailure(authParse.data.jwt, peerId, this.config.groupId);
+        if (e instanceof AuthHandshakeError) {
+          markRealtimeAuthError(`auth_verify_failed:${e.reason}${detail ? `:${detail}` : ""}`);
+        } else {
+          markRealtimeAuthError(`auth_verify_failed${detail ? `:${detail}` : ""}`);
+        }
         channel.close();
       }
       return;
