@@ -112,7 +112,12 @@ export function DocInlineEditor({
     el.addEventListener("input", onInput);
     eng.ytext.observe(observer);
 
+    // Brute-force safety net: catches any case where Yjs observe/doc.update
+    // fires before bind, or React re-renders detach the listener silently.
+    const pollId = window.setInterval(() => observer(), 500);
+
     unbindRef.current = () => {
+      window.clearInterval(pollId);
       el.removeEventListener("input", onInput);
       eng.ytext.unobserve(observer);
     };
@@ -219,8 +224,30 @@ export function DocInlineEditor({
           }, 800);
         };
 
+        const syncTextareaFromYText = () => {
+          const el = textareaRef.current;
+          if (!el) return;
+          const next = ytext.toString();
+          if (el.value === next) return;
+          const focused = document.activeElement === el;
+          const start = el.selectionStart ?? 0;
+          const end = el.selectionEnd ?? start;
+          el.value = next;
+          if (focused) {
+            const max = next.length;
+            el.setSelectionRange(Math.min(start, max), Math.min(end, max));
+          }
+        };
+
         const onDocUpdate = (_update: Uint8Array, origin: unknown) => {
-          if (origin === DPE_PROVIDER_ORIGIN) return;
+          if (origin === DPE_PROVIDER_ORIGIN) {
+            // Remote update applied via SecureYjsProvider: force the textarea
+            // to mirror the new ytext state. This is independent of the
+            // ytext.observe path wired in wireTextarea, which can race during
+            // engine setup.
+            syncTextareaFromYText();
+            return;
+          }
           persistDoc();
         };
         doc.on("update", onDocUpdate);

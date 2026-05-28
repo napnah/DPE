@@ -254,14 +254,10 @@ export default function GroupPage() {
           <h1>{groupName}</h1>
           <p className="app-muted">
             P2P: {p2pStatus}
-            {p2pStatus === "信令未连接" && (
-              <>
-                {" "}
-                <button type="button" className="app-btn app-btn--small" onClick={retryP2p}>
-                  重试连接
-                </button>
-              </>
-            )}
+            {" "}
+            <button type="button" className="app-btn app-btn--small" onClick={retryP2p}>
+              重试连接
+            </button>
             {isOwner && (
               <>
                 {" "}

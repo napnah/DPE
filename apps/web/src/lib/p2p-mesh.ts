@@ -51,15 +51,20 @@ export class GroupP2pMesh {
   private readonly authenticated = new Map<string, AuthenticatedPeer>();
   private readonly reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+  private lastPeersInRoom = 0;
+
   constructor(private readonly config: MeshConfig) {}
 
-  private emitPeerStats(peersInRoom = 0): void {
+  private emitPeerStats(peersInRoom?: number): void {
+    if (typeof peersInRoom === "number") {
+      this.lastPeersInRoom = Math.max(0, peersInRoom);
+    }
     let channelsOpen = 0;
     for (const ch of this.channels.values()) {
       if (ch.readyState === "open") channelsOpen += 1;
     }
     markRealtimePeerStats({
-      peersInRoom: Math.max(0, peersInRoom),
+      peersInRoom: this.lastPeersInRoom,
       channelsOpen,
       authedPeers: this.authenticated.size,
     });
