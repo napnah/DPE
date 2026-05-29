@@ -50,10 +50,87 @@ export class GroupP2pMesh {
   private readonly providers = new Set<SecureYjsProvider>();
   private readonly authenticated = new Map<string, AuthenticatedPeer>();
   private readonly reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
+  private readonly pendingCandidates = new Map<string, RTCIceCandidateInit[]>();
+  private readonly connecting = new Set<string>();
+  private readonly lastAlive = new Map<string, number>();
+  private readonly currentRoomPeers = new Set<string>();
   private lastPeersInRoom = 0;
+  private healthTimer: ReturnType<typeof setInterval> | null = null;
+  private static readonly HEALTH_INTERVAL_MS = 5_000;
+  private static readonly PONG_TIMEOUT_MS = 15_000;
+  private static readonly DPE_PING = "__dpe_ping__";
+  private static readonly DPE_PONG = "__dpe_pong__";
 
   constructor(private readonly config: MeshConfig) {}
+
+  /** Lower node_id always initiates the WebRTC offer for a pair. */
+  private shouldInitiate(peerId: string): boolean {
+    return this.config.nodeId < peerId;
+  }
+
+  private notePeerAlive(peerId: string): void {
+    this.lastAlive.set(peerId, Date.now());
+  }
+
+  private startHealthLoop(): void {
+    if (this.healthTimer) return;
+    this.healthTimer = setInterval(() => this.runHealthCheck(), GroupP2pMesh.HEALTH_INTERVAL_MS);
+  }
+
+  private runHealthCheck(): void {
+    const now = Date.now();
+
+    // 1. Heartbeat: send ping and reap peers that stop responding.
+    for (const [peerId, ch] of this.channels) {
+      if (peerId === this.config.nodeId) {
+        this.cleanupPeer(peerId);
+        continue;
+      }
+      if (ch.readyState !== "open") continue;
+
+      try {
+        ch.send(GroupP2pMesh.DPE_PING);
+      } catch {
+        markRealtimeAuthError(`channel_send_failed:${peerId.slice(0, 6)}`);
+        this.cleanupPeer(peerId);
+        continue;
+      }
+
+      const seen = this.lastAlive.get(peerId) ?? 0;
+      if (seen > 0 && now - seen > GroupP2pMesh.PONG_TIMEOUT_MS) {
+        markRealtimeAuthError(`channel_silent:${peerId.slice(0, 6)}`);
+        this.cleanupPeer(peerId);
+      }
+    }
+
+    // 2. Tear down any pc that is already in failed/closed state.
+    for (const [peerId, pc] of this.pcs) {
+      const st = pc.connectionState;
+      if (st === "failed" || st === "closed") this.cleanupPeer(peerId);
+    }
+
+    // 3. Reconcile against signaling's latest peer list.
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      for (const peerId of this.currentRoomPeers) {
+        if (peerId === this.config.nodeId) continue;
+        const ch = this.channels.get(peerId);
+        const pc = this.pcs.get(peerId);
+        const channelOpen = ch?.readyState === "open";
+        const pcLive =
+          pc?.connectionState === "connected" ||
+          pc?.connectionState === "connecting" ||
+          pc?.connectionState === "new";
+        if (!channelOpen && !pcLive && !this.connecting.has(peerId)) {
+          if (pc) this.cleanupPeer(peerId);
+          if (this.shouldInitiate(peerId)) {
+            void this.connectPeer(peerId);
+          }
+        }
+      }
+    }
+
+    this.emitPeerStats();
+  }
 
   private emitPeerStats(peersInRoom?: number): void {
     if (typeof peersInRoom === "number") {
@@ -143,9 +220,13 @@ export class GroupP2pMesh {
         node_id: this.config.nodeId,
       }),
     );
+
+    this.startHealthLoop();
   }
 
   stop(): void {
+    if (this.healthTimer) clearInterval(this.healthTimer);
+    this.healthTimer = null;
     this.ws?.close();
     for (const t of this.reconnectTimers.values()) clearTimeout(t);
     this.reconnectTimers.clear();
@@ -154,10 +235,16 @@ export class GroupP2pMesh {
     this.channels.clear();
     this.authenticated.clear();
     this.providers.clear();
+    this.lastAlive.clear();
+    this.pendingCandidates.clear();
+    this.connecting.clear();
+    this.currentRoomPeers.clear();
     this.emitPeerStats(0);
   }
 
   private cleanupPeer(peerId: string): void {
+    if (peerId === this.config.nodeId) return;
+
     const timer = this.reconnectTimers.get(peerId);
     if (timer) {
       clearTimeout(timer);
@@ -165,6 +252,9 @@ export class GroupP2pMesh {
     }
     const pc = this.pcs.get(peerId);
     if (pc) {
+      pc.onconnectionstatechange = null;
+      pc.onicecandidate = null;
+      pc.ondatachannel = null;
       try {
         pc.close();
       } catch {
@@ -172,8 +262,21 @@ export class GroupP2pMesh {
       }
     }
     this.pcs.delete(peerId);
+    const ch = this.channels.get(peerId);
+    if (ch) {
+      ch.onopen = null;
+      ch.onclose = null;
+      ch.onmessage = null;
+      try {
+        ch.close();
+      } catch {
+        /* ignore */
+      }
+    }
     this.channels.delete(peerId);
     this.authenticated.delete(peerId);
+    this.lastAlive.delete(peerId);
+    this.pendingCandidates.delete(peerId);
     for (const p of this.providers) p.unregisterPeer(peerId);
     this.emitPeerStats();
   }
@@ -211,41 +314,86 @@ export class GroupP2pMesh {
     };
 
     if (msg.type === "peers" && msg.peers) {
+      this.currentRoomPeers.clear();
+      for (const p of msg.peers) this.currentRoomPeers.add(p);
       this.emitPeerStats(Math.max(0, msg.peers.length - 1));
       for (const peerId of msg.peers) {
-        if (peerId === this.config.nodeId || this.pcs.has(peerId)) continue;
-        void this.connectPeer(peerId, this.config.nodeId < peerId);
+        if (peerId === this.config.nodeId) continue;
+        const existing = this.pcs.get(peerId);
+        const ch = this.channels.get(peerId);
+        if (existing) {
+          const st = existing.connectionState;
+          if (st === "failed" || st === "closed") {
+            this.cleanupPeer(peerId);
+          } else if (ch?.readyState === "open") {
+            continue;
+          } else if (st === "connected" || st === "connecting" || st === "new") {
+            continue;
+          }
+        }
+        if (!this.shouldInitiate(peerId)) continue;
+        void this.connectPeer(peerId);
       }
       return;
     }
 
     if (msg.type !== "signal" || !msg.payload) return;
     const from = String(msg.payload.from ?? "");
-    let pc = this.pcs.get(from);
-    if (!pc) {
-      // Signal ordering can race: offer may arrive before peers-list driven connectPeer().
-      if (msg.payload.kind !== "offer") return;
-      await this.connectPeer(from, false);
-      pc = this.pcs.get(from);
-      if (!pc) return;
-    }
+    if (!from || from === this.config.nodeId) return;
 
     if (msg.payload.kind === "offer" && msg.payload.sdp) {
+      // Perfect negotiation: lower node_id is always initiator.
+      if (this.shouldInitiate(from)) return;
+
+      let pc = this.pcs.get(from);
+      if (!pc) {
+        await this.connectPeer(from, false);
+        pc = this.pcs.get(from);
+        if (!pc) return;
+      }
+
       await pc.setRemoteDescription(
         new RTCSessionDescription(msg.payload.sdp as RTCSessionDescriptionInit),
       );
+      await this.flushCandidates(from, pc);
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       this.sendSignal(from, { kind: "answer", sdp: answer });
-    } else if (msg.payload.kind === "answer" && msg.payload.sdp) {
+      return;
+    }
+
+    const pc = this.pcs.get(from);
+    if (!pc) return;
+
+    if (msg.payload.kind === "answer" && msg.payload.sdp) {
+      if (pc.signalingState !== "have-local-offer") return;
       await pc.setRemoteDescription(
         new RTCSessionDescription(msg.payload.sdp as RTCSessionDescriptionInit),
       );
+      await this.flushCandidates(from, pc);
     } else if (msg.payload.kind === "candidate" && msg.payload.candidate) {
+      const candidate = msg.payload.candidate as RTCIceCandidateInit;
+      if (pc.remoteDescription) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch {
+          /* ignore */
+        }
+      } else {
+        const queue = this.pendingCandidates.get(from) ?? [];
+        queue.push(candidate);
+        this.pendingCandidates.set(from, queue);
+      }
+    }
+  }
+
+  private async flushCandidates(peerId: string, pc: RTCPeerConnection): Promise<void> {
+    const pending = this.pendingCandidates.get(peerId);
+    if (!pending?.length) return;
+    this.pendingCandidates.delete(peerId);
+    for (const candidate of pending) {
       try {
-        await pc.addIceCandidate(
-          new RTCIceCandidate(msg.payload.candidate as RTCIceCandidateInit),
-        );
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
       } catch {
         /* ignore */
       }
@@ -263,65 +411,103 @@ export class GroupP2pMesh {
     );
   }
 
-  private async connectPeer(peerId: string, initiator: boolean): Promise<void> {
-    const pc = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-    });
-    this.pcs.set(peerId, pc);
-    pc.onconnectionstatechange = () => {
-      const st = pc.connectionState;
-      if (st === "connected") {
-        const pending = this.reconnectTimers.get(peerId);
-        if (pending) {
-          clearTimeout(pending);
-          this.reconnectTimers.delete(peerId);
-        }
-        return;
-      }
+  private async connectPeer(peerId: string, initiator = this.shouldInitiate(peerId)): Promise<void> {
+    if (peerId === this.config.nodeId) return;
+    if (initiator !== this.shouldInitiate(peerId)) return;
+    if (this.connecting.has(peerId)) return;
 
-      if (st === "failed" || st === "closed") {
-        this.cleanupPeer(peerId);
-        // Signal servers may not always emit another peers list update; try one reconnect.
-        if (this.ws?.readyState === WebSocket.OPEN) {
-          void this.connectPeer(peerId, this.config.nodeId < peerId);
-        }
-        return;
-      }
+    const existing = this.pcs.get(peerId);
+    const existingChannel = this.channels.get(peerId);
+    if (
+      existing &&
+      (existing.connectionState === "connected" || existing.connectionState === "connecting") &&
+      (existingChannel?.readyState === "open" || existingChannel?.readyState === "connecting")
+    ) {
+      return;
+    }
 
-      if (st === "disconnected") {
-        // "disconnected" can be transient on unstable LAN/VM links; don't tear down immediately.
-        if (this.reconnectTimers.has(peerId)) return;
-        const timer = setTimeout(() => {
-          this.reconnectTimers.delete(peerId);
-          const current = this.pcs.get(peerId);
-          if (!current || current.connectionState !== "disconnected") return;
-          this.cleanupPeer(peerId);
-          if (this.ws?.readyState === WebSocket.OPEN) {
-            void this.connectPeer(peerId, this.config.nodeId < peerId);
+    this.connecting.add(peerId);
+    this.cleanupPeer(peerId);
+
+    try {
+      const pc = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      });
+      this.pcs.set(peerId, pc);
+
+      pc.onconnectionstatechange = () => {
+        const st = pc.connectionState;
+        if (st === "connected") {
+          const pending = this.reconnectTimers.get(peerId);
+          if (pending) {
+            clearTimeout(pending);
+            this.reconnectTimers.delete(peerId);
           }
-        }, 4000);
-        this.reconnectTimers.set(peerId, timer);
+          return;
+        }
+
+        if (st === "failed" || st === "closed") {
+          this.cleanupPeer(peerId);
+          if (this.ws?.readyState === WebSocket.OPEN && this.shouldInitiate(peerId)) {
+            void this.connectPeer(peerId);
+          }
+          return;
+        }
+
+        if (st === "disconnected") {
+          if (this.reconnectTimers.has(peerId)) return;
+          const timer = setTimeout(() => {
+            this.reconnectTimers.delete(peerId);
+            const current = this.pcs.get(peerId);
+            if (!current || current.connectionState !== "disconnected") return;
+            this.cleanupPeer(peerId);
+            if (this.ws?.readyState === WebSocket.OPEN && this.shouldInitiate(peerId)) {
+              void this.connectPeer(peerId);
+            }
+          }, 4000);
+          this.reconnectTimers.set(peerId, timer);
+        }
+      };
+
+      pc.onicecandidate = (ev) => {
+        if (ev.candidate) {
+          this.sendSignal(peerId, { kind: "candidate", candidate: ev.candidate.toJSON() });
+        }
+      };
+
+      if (initiator) {
+        const channel = pc.createDataChannel("dpe", { ordered: true });
+        this.wireChannel(peerId, channel);
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        this.sendSignal(peerId, { kind: "offer", sdp: offer });
+      } else {
+        pc.ondatachannel = (ev) => {
+          if (ev.channel.label !== "dpe") return;
+          if (this.channels.has(peerId)) return;
+          this.wireChannel(peerId, ev.channel);
+        };
       }
-    };
-
-    pc.onicecandidate = (ev) => {
-      if (ev.candidate) {
-        this.sendSignal(peerId, { kind: "candidate", candidate: ev.candidate.toJSON() });
-      }
-    };
-
-    pc.ondatachannel = (ev) => this.wireChannel(peerId, ev.channel);
-
-    if (initiator) {
-      const channel = pc.createDataChannel("dpe");
-      this.wireChannel(peerId, channel);
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      this.sendSignal(peerId, { kind: "offer", sdp: offer });
+    } finally {
+      this.connecting.delete(peerId);
     }
   }
 
   private wireChannel(peerId: string, channel: RTCDataChannel): void {
+    if (peerId === this.config.nodeId) return;
+
+    const prev = this.channels.get(peerId);
+    if (prev && prev !== channel) {
+      prev.onopen = null;
+      prev.onclose = null;
+      prev.onmessage = null;
+      try {
+        prev.close();
+      } catch {
+        /* ignore */
+      }
+    }
+
     this.channels.set(peerId, channel);
     let sentAuth = false;
 
@@ -345,12 +531,12 @@ export class GroupP2pMesh {
         channel.send(serializeAuthEnvelope(envelope));
         sentAuth = true;
       } catch {
-        // Channel may race from open -> closing; let later events retry safely.
         markRealtimeAuthError("auth_send_failed");
       }
     };
 
     channel.onopen = () => {
+      this.notePeerAlive(peerId);
       this.emitPeerStats();
       void sendAuth().catch(() => {
         /* ignore auth race errors */
@@ -371,6 +557,22 @@ export class GroupP2pMesh {
     text: string,
     ensureAuthSent: () => Promise<void>,
   ): Promise<void> {
+    // Lightweight heartbeat bypass — bypass JSON.parse/auth path.
+    if (text === GroupP2pMesh.DPE_PING) {
+      if (channel.readyState === "open") {
+        try {
+          channel.send(GroupP2pMesh.DPE_PONG);
+        } catch {
+          /* ignore */
+        }
+      }
+      return;
+    }
+    if (text === GroupP2pMesh.DPE_PONG) {
+      this.notePeerAlive(peerId);
+      return;
+    }
+
     let json: unknown;
     try {
       json = JSON.parse(text);
@@ -394,6 +596,7 @@ export class GroupP2pMesh {
           peerPublicKeyBase64Url: peerPk,
         });
         this.onPeerAuthed(peer);
+        this.notePeerAlive(peerId);
       } catch (e) {
         const detail = diagnoseJwtFailure(authParse.data.jwt, peerId, this.config.groupId);
         if (e instanceof AuthHandshakeError) {
@@ -407,6 +610,7 @@ export class GroupP2pMesh {
     }
 
     markRealtimeRx(new TextEncoder().encode(text).byteLength);
+    this.notePeerAlive(peerId);
     for (const p of this.providers) {
       void p.handleWireMessage(text);
     }
