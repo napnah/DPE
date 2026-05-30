@@ -128,7 +128,7 @@ async function main() {
       };
       wsClients.add(client);
       socket.on("close", () => wsClients.delete(client));
-      socket.on("message", (raw) => {
+      socket.on("message", (raw: Buffer | string) => {
         const text = typeof raw === "string" ? raw : raw.toString("utf8");
         try {
           const msg = JSON.parse(text) as { type?: string };
