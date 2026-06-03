@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { exportPublicKeyBase64Url, importPublicKeyBase64Url } from "@dpe/crypto";
 import { CopyableField } from "../components/CopyableField";
 import { GroupCard } from "../components/GroupCard";
 import { api, saveGroupAdminKey, type GroupCardRow } from "../lib/api";
-import { loadIdentity, loadPrivateKey } from "../lib/identity";
+import { useIdentity } from "../lib/use-identity";
 
 export default function DashboardPage() {
-  const identity = loadIdentity();
+  const identity = useIdentity();
   const [groups, setGroups] = useState<GroupCardRow[]>([]);
   const [newGroupName, setNewGroupName] = useState("");
   const [newGroupDesc, setNewGroupDesc] = useState("");
@@ -18,7 +17,7 @@ export default function DashboardPage() {
     if (!identity) return;
     setError(null);
     try {
-      setGroups(await api.listAllGroups(identity.nodeId));
+      setGroups(await api.listAllGroups());
     } catch (e) {
       setError(e instanceof Error ? e.message : "加载失败");
     }
@@ -30,21 +29,18 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!identity) return;
-    void api.syncDisplayName(identity.nodeId, identity.displayName).catch(() => {});
+    void api.syncDisplayName(null, identity.displayName).catch(() => {});
   }, [identity?.nodeId, identity?.displayName]);
 
   async function createGroup() {
     if (!identity || !newGroupName.trim()) return;
     setBusy(true);
     try {
-      const sk = loadPrivateKey();
-      if (!sk) throw new Error("缺少私钥");
-      const pk = await importPublicKeyBase64Url(identity.publicKeyBase64Url);
       const created = await api.createGroup({
         name: newGroupName.trim(),
         description: newGroupDesc.trim(),
         owner_node_id: identity.nodeId,
-        owner_public_key: exportPublicKeyBase64Url(pk),
+        owner_public_key: identity.publicKeyBase64Url,
         owner_display_name: identity.displayName,
         control_mode: "proxy",
       });
@@ -63,7 +59,7 @@ export default function DashboardPage() {
     return (
       <main className="app-page">
         <p>
-          请先 <Link to="/">生成身份</Link>
+          请先 <Link to="/login">登录账号</Link>
         </p>
       </main>
     );
@@ -83,14 +79,13 @@ export default function DashboardPage() {
       {error && <p className="app-error">{error}</p>}
 
       <section className="app-panel app-panel--identity">
-        <h2>本机身份</h2>
-        <p className="app-muted">邀请他人入群时请提供下方节点 ID（UID）；用户名仅用于展示。</p>
-        <CopyableField label="用户名" value={identity.displayName} />
-        <CopyableField
-          label="节点 ID（UID）"
-          value={identity.nodeId}
-          hint="技术标识，不可修改"
-        />
+        <h2>账号身份</h2>
+        <p className="app-muted">邀请他人入群时请提供下方节点 ID（UID）；显示名仅用于展示。</p>
+        {identity.username && (
+          <CopyableField label="登录账号" value={identity.username} hint="本机控制平面账号" />
+        )}
+        <CopyableField label="显示名" value={identity.displayName} />
+        <CopyableField label="节点 ID（UID）" value={identity.nodeId} hint="技术标识，不可修改" />
       </section>
 
       <section className="app-panel">
@@ -108,12 +103,7 @@ export default function DashboardPage() {
             value={newGroupDesc}
             onChange={(e) => setNewGroupDesc(e.target.value)}
           />
-          <button
-            type="button"
-            className="app-btn app-btn--primary"
-            disabled={busy}
-            onClick={() => void createGroup()}
-          >
+          <button type="button" className="app-btn app-btn--primary" disabled={busy} onClick={() => void createGroup()}>
             创建
           </button>
         </div>

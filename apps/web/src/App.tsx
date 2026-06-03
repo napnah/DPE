@@ -1,66 +1,91 @@
 import type { ReactNode } from "react";
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import DashboardPage from "./pages/DashboardPage";
 import ConnectionsPage from "./pages/ConnectionsPage";
-import OnboardingPage from "./pages/OnboardingPage";
+import LoginPage from "./pages/LoginPage";
+import RegisterPage from "./pages/RegisterPage";
 import GroupPage from "./pages/GroupPage";
 import GroupSettingsPage from "./pages/GroupSettingsPage";
 import DocEditorPage from "./pages/DocEditorPage";
 import DesignRoutes from "./designs/DesignRoutes";
-import { hasUserProfile } from "./lib/identity";
+import { isLoggedIn } from "./lib/identity";
 
-function RequireProfile({ children }: { children: ReactNode }) {
-  if (!hasUserProfile()) return <Navigate to="/" replace />;
+function RequireAuth({ children }: { children: ReactNode }) {
+  const location = useLocation();
+  if (!isLoggedIn()) {
+    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  }
   return <AppShell>{children}</AppShell>;
+}
+
+function GuestOnly({ children }: { children: ReactNode }) {
+  if (isLoggedIn()) return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
 }
 
 export default function App() {
   return (
     <Routes>
       <Route path="/designs/*" element={<DesignRoutes />} />
-      <Route path="/" element={<OnboardingPage />} />
+      <Route path="/" element={<Navigate to="/login" replace />} />
+      <Route
+        path="/login"
+        element={
+          <GuestOnly>
+            <LoginPage />
+          </GuestOnly>
+        }
+      />
+      <Route
+        path="/register"
+        element={
+          <GuestOnly>
+            <RegisterPage />
+          </GuestOnly>
+        }
+      />
       <Route
         path="/dashboard"
         element={
-          <RequireProfile>
+          <RequireAuth>
             <DashboardPage />
-          </RequireProfile>
+          </RequireAuth>
         }
       />
       <Route
         path="/connections"
         element={
-          <RequireProfile>
+          <RequireAuth>
             <ConnectionsPage />
-          </RequireProfile>
+          </RequireAuth>
         }
       />
       <Route
         path="/groups/:groupId"
         element={
-          <RequireProfile>
+          <RequireAuth>
             <GroupPage />
-          </RequireProfile>
+          </RequireAuth>
         }
       />
       <Route
         path="/groups/:groupId/settings"
         element={
-          <RequireProfile>
+          <RequireAuth>
             <GroupSettingsPage />
-          </RequireProfile>
+          </RequireAuth>
         }
       />
       <Route
         path="/groups/:groupId/docs/:docId"
         element={
-          <RequireProfile>
+          <RequireAuth>
             <DocEditorPage />
-          </RequireProfile>
+          </RequireAuth>
         }
       />
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>
   );
 }

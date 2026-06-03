@@ -3,11 +3,11 @@ import { Link } from "react-router-dom";
 import { exportPublicKeyBase64Url, importPublicKeyBase64Url } from "@dpe/crypto";
 import { api, saveGroupAdminKey, type InvitationRow } from "../lib/api";
 import { fetchDiscovery, fetchNetwork, getLanAgentBaseUrl, searchPeers, type LanPeer } from "../lib/lan";
-import { loadIdentity } from "../lib/identity";
+import { useIdentity } from "../lib/use-identity";
 import { peerDisplayLabel } from "../lib/display-names";
 
 export default function ConnectionsPage() {
-  const identity = loadIdentity();
+  const identity = useIdentity();
   const [network, setNetwork] = useState<Record<string, unknown> | null>(null);
   const [lanError, setLanError] = useState<string | null>(null);
   const [peers, setPeers] = useState<LanPeer[]>([]);
@@ -29,7 +29,7 @@ export default function ConnectionsPage() {
           return null;
         }),
         fetchDiscovery().catch(() => ({ peers: [] })),
-        api.listInvitations(identity.nodeId),
+        api.listInvitations(),
       ]);
       setNetwork(net);
       setPeers(disc.peers ?? []);
@@ -81,7 +81,7 @@ export default function ConnectionsPage() {
     if (!identity) return;
     setBusy(true);
     try {
-      await api.rejectInvitation(inv.id, identity.nodeId);
+      await api.rejectInvitation(inv.id);
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "拒绝失败");
@@ -94,7 +94,7 @@ export default function ConnectionsPage() {
     return (
       <main className="app-page">
         <p>
-          请先 <Link to="/">生成身份</Link>
+          请先 <Link to="/login">登录账号</Link>
         </p>
       </main>
     );

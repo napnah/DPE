@@ -2,10 +2,12 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   Inject,
   Param,
   Post,
   Query,
+  UnauthorizedException,
 } from "@nestjs/common";
 import { GroupsService } from "./groups.service.js";
 import type {
@@ -17,10 +19,28 @@ import type {
   UpdateDisplayNameDto,
   PutDocSnapshotDto,
 } from "./groups.dto.js";
+import { AuthService } from "../auth/auth.service.js";
+import { extractToken } from "../auth/auth.controller.js";
+import { DocStateService } from "./doc-state.service.js";
 
 @Controller()
 export class GroupsController {
-  constructor(@Inject(GroupsService) private readonly groups: GroupsService) {}
+  constructor(
+    @Inject(GroupsService) private readonly groups: GroupsService,
+    @Inject(AuthService) private readonly auth: AuthService,
+    @Inject(DocStateService) private readonly docState: DocStateService,
+  ) {}
+
+  private async resolveNodeId(
+    headers: Record<string, string | string[] | undefined>,
+    queryNodeId?: string,
+  ): Promise<string> {
+    if (queryNodeId?.trim()) return queryNodeId.trim();
+    const token = extractToken(headers);
+    const nodeId = await this.auth.resolveNodeIdFromSession(token);
+    if (!nodeId) throw new UnauthorizedException("missing node_id or auth session");
+    return nodeId;
+  }
 
   @Post("groups")
   createGroup(@Body() body: CreateGroupDto) {
@@ -28,25 +48,40 @@ export class GroupsController {
   }
 
   @Post("users/me/display-name")
-  updateDisplayName(@Body() body: UpdateDisplayNameDto) {
-    return this.groups.updateMemberDisplayName(body.node_id, body.display_name);
+  async updateDisplayName(
+    @Body() body: UpdateDisplayNameDto,
+    @Headers() headers: Record<string, string | string[] | undefined>,
+  ) {
+    const nodeId = await this.resolveNodeId(headers, body.node_id);
+    return this.groups.updateMemberDisplayName(nodeId, body.display_name);
   }
 
   @Get("users/me/groups")
-  listMyGroups(
-    @Query("node_id") nodeId: string,
+  async listMyGroups(
+    @Query("node_id") queryNodeId: string,
     @Query("role") role: "owner" | "member",
+    @Headers() headers: Record<string, string | string[] | undefined>,
   ) {
+    const nodeId = await this.resolveNodeId(headers, queryNodeId);
     return this.groups.listGroupsForNode(nodeId, role ?? "member");
   }
 
   @Get("users/me/groups/all")
-  listAllGroups(@Query("node_id") nodeId: string) {
+  async listAllGroups(
+    @Query("node_id") queryNodeId: string,
+    @Headers() headers: Record<string, string | string[] | undefined>,
+  ) {
+    const nodeId = await this.resolveNodeId(headers, queryNodeId);
     return this.groups.listAllGroupsForNode(nodeId);
   }
 
   @Get("groups/:id/governance")
-  governance(@Param("id") id: string, @Query("caller_node_id") callerNodeId: string) {
+  async governance(
+    @Param("id") id: string,
+    @Query("caller_node_id") queryNodeId: string,
+    @Headers() headers: Record<string, string | string[] | undefined>,
+  ) {
+    const callerNodeId = await this.resolveNodeId(headers, queryNodeId);
     return this.groups.getGovernance(id, callerNodeId);
   }
 
@@ -56,19 +91,23 @@ export class GroupsController {
   }
 
   @Post("groups/:id/dissolve")
-  dissolve(
+  async dissolve(
     @Param("id") id: string,
-    @Query("caller_node_id") callerNodeId: string,
+    @Query("caller_node_id") queryNodeId: string,
+    @Headers() headers: Record<string, string | string[] | undefined>,
   ) {
+    const callerNodeId = await this.resolveNodeId(headers, queryNodeId);
     return this.groups.dissolveGroup(id, callerNodeId);
   }
 
   @Get("groups/:id/docs/:docId/role-acls")
-  docRoleAcls(
+  async docRoleAcls(
     @Param("id") id: string,
     @Param("docId") docId: string,
-    @Query("caller_node_id") callerNodeId: string,
+    @Query("caller_node_id") queryNodeId: string,
+    @Headers() headers: Record<string, string | string[] | undefined>,
   ) {
+    const callerNodeId = await this.resolveNodeId(headers, queryNodeId);
     return this.groups.getDocRoleAcls(id, docId, callerNodeId);
   }
 
@@ -87,7 +126,11 @@ export class GroupsController {
   }
 
   @Get("users/me/invitations")
-  listInvitations(@Query("node_id") nodeId: string) {
+  async listInvitations(
+    @Query("node_id") queryNodeId: string,
+    @Headers() headers: Record<string, string | string[] | undefined>,
+  ) {
+    const nodeId = await this.resolveNodeId(headers, queryNodeId);
     return this.groups.listInvitations(nodeId);
   }
 
@@ -97,43 +140,56 @@ export class GroupsController {
   }
 
   @Post("invitations/:invitationId/reject")
-  reject(
+  async reject(
     @Param("invitationId") invitationId: string,
-    @Query("node_id") nodeId: string,
+    @Query("node_id") queryNodeId: string,
+    @Headers() headers: Record<string, string | string[] | undefined>,
   ) {
+    const nodeId = await this.resolveNodeId(headers, queryNodeId);
     return this.groups.rejectInvitation(invitationId, nodeId);
   }
 
 
   @Get("groups/:id/docs/:docId/snapshot")
-  getDocSnapshot(
+  async getDocSnapshot(
     @Param("id") id: string,
     @Param("docId") docId: string,
-    @Query("node_id") nodeId: string,
+    @Query("node_id") queryNodeId: string,
+    @Headers() headers: Record<string, string | string[] | undefined>,
   ) {
-    return this.groups.getDocSnapshot(id, docId, nodeId);
+    const nodeId = await this.resolveNodeId(headers, queryNodeId);
+    return this.docState.getDocSnapshot(id, docId, nodeId);
   }
 
   @Post("groups/:id/docs/:docId/snapshot")
-  putDocSnapshot(
+  async putDocSnapshot(
     @Param("id") id: string,
     @Param("docId") docId: string,
     @Body() body: PutDocSnapshotDto,
+    @Headers() headers: Record<string, string | string[] | undefined>,
   ) {
-    return this.groups.putDocSnapshot(id, docId, body.node_id, body.state_update_base64);
+    const nodeId = await this.resolveNodeId(headers, body.node_id);
+    return this.docState.putDocSnapshot(id, docId, nodeId, body.state_update_base64);
   }
 
   @Post("groups/:id/jwt/refresh")
-  refreshJwt(@Param("id") id: string, @Body() body: RefreshJwtDto) {
-    return this.groups.refreshJwt(id, body);
+  async refreshJwt(
+    @Param("id") id: string,
+    @Body() body: RefreshJwtDto,
+    @Headers() headers: Record<string, string | string[] | undefined>,
+  ) {
+    const nodeId = await this.resolveNodeId(headers, body.node_id);
+    return this.groups.refreshJwt(id, { ...body, node_id: nodeId });
   }
 
   @Post("groups/:id/docs/:docId/rotate-key")
-  rotateKey(
+  async rotateKey(
     @Param("id") id: string,
     @Param("docId") docId: string,
-    @Query("caller_node_id") callerNodeId: string,
+    @Query("caller_node_id") queryNodeId: string,
+    @Headers() headers: Record<string, string | string[] | undefined>,
   ) {
+    const callerNodeId = await this.resolveNodeId(headers, queryNodeId);
     return this.groups.rotateDocKey(id, callerNodeId, docId);
   }
 
@@ -143,16 +199,23 @@ export class GroupsController {
   }
 
   @Get("groups/:id/tree")
-  tree(@Param("id") id: string, @Query("node_id") nodeId: string) {
+  async tree(
+    @Param("id") id: string,
+    @Query("node_id") queryNodeId: string,
+    @Headers() headers: Record<string, string | string[] | undefined>,
+  ) {
+    const nodeId = await this.resolveNodeId(headers, queryNodeId);
     return this.groups.getTree(id, nodeId);
   }
 
   @Post("groups/:id/rpc")
-  rpc(
+  async rpc(
     @Param("id") id: string,
-    @Query("caller_node_id") callerNodeId: string,
+    @Query("caller_node_id") queryNodeId: string,
     @Body() body: unknown,
+    @Headers() headers: Record<string, string | string[] | undefined>,
   ) {
+    const callerNodeId = await this.resolveNodeId(headers, queryNodeId);
     return this.groups.operableRpc(id, callerNodeId, body);
   }
 }

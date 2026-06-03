@@ -13,6 +13,8 @@ import {
   subscribeRealtimeDebug,
   type RealtimeDebugSnapshot,
 } from "../lib/realtime-debug";
+import { RealtimeTracePanel } from "../components/RealtimeTracePanel";
+import { clearRealtimeTrace, setRealtimeTraceContext } from "../lib/realtime-trace";
 
 function isFolder(n: DocNodeRow) {
   return isFolderDoc(n);
@@ -49,6 +51,7 @@ export default function GroupPage() {
   const [error, setError] = useState<string | null>(null);
   const [debug, setDebug] = useState<RealtimeDebugSnapshot>(() => getRealtimeDebugSnapshot());
   const [meshGen, setMeshGen] = useState(0);
+
   const [newItemTitle, setNewItemTitle] = useState("");
   const [renameTitle, setRenameTitle] = useState("");
   const [selectedId, setSelectedId] = useState(ROOT_DOC_ID);
@@ -56,7 +59,14 @@ export default function GroupPage() {
   const selectedNode = nodes.find((n) => n.docId === selectedId);
   const selectedIsFolder = selectedNode ? isFolder(selectedNode) : true;
   const syncDocId = selectedIsFolder ? ROOT_DOC_ID : selectedId;
-
+  useEffect(() => {
+    setRealtimeTraceContext({
+      groupId: gid,
+      nodeId: nodeId?.slice(0, 16),
+      docId: syncDocId,
+      origin: typeof location !== "undefined" ? location.origin : "",
+    });
+  }, [gid, nodeId, syncDocId]);
   useEffect(() => {
     setRenameTitle(selectedNode?.title ?? "");
   }, [selectedId, selectedNode?.title]);
@@ -164,6 +174,7 @@ export default function GroupPage() {
 
   function retryP2p() {
     resetRealtimeDebugSnapshot();
+    clearRealtimeTrace();
     setMeshGen((n) => n + 1);
   }
 
@@ -271,6 +282,7 @@ export default function GroupPage() {
             {debug.lastRejectReason ? ` · reject=${debug.lastRejectReason}` : ""}
             {debug.lastAuthError ? ` · authErr=${debug.lastAuthError}` : ""}
           </p>
+          <RealtimeTracePanel />
         </div>
       </header>
 

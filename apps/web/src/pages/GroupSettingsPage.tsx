@@ -4,7 +4,7 @@ import { CopyableField } from "../components/CopyableField";
 import { MemberRoleAssign } from "../components/MemberRoleAssign";
 import { api, type GovernancePayload } from "../lib/api";
 import { stopGroupMesh } from "../lib/mesh-context";
-import { loadIdentity } from "../lib/identity";
+import { useIdentity } from "../lib/use-identity";
 import { memberDisplayLabel } from "../lib/display-names";
 import { ROLE_LABELS } from "../lib/roles";
 
@@ -14,7 +14,7 @@ function rolesForMember(gov: GovernancePayload, nodeId: string): string[] {
 
 export default function GroupSettingsPage() {
   const { groupId } = useParams<{ groupId: string }>();
-  const identity = loadIdentity();
+  const identity = useIdentity();
   const nodeId = identity?.nodeId ?? "";
   const gid = groupId ?? "";
   const navigate = useNavigate();

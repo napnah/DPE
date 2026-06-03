@@ -131,10 +131,59 @@ model DocNode {
   group    Group        @relation(fields: [groupId], references: [id], onDelete: Cascade)
   keys     DocumentKey[]
   snapshot DocSnapshot?
+  state    DocState?
 
   @@id([groupId, docId])
   @@index([groupId, parentDocId])
   @@map("doc_nodes")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  username     String   @unique
+  passwordHash String   @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  keys     UserKey[]
+  sessions UserSession[]
+
+  @@map("users")
+}
+
+model UserKey {
+  id                String   @id @default(uuid())
+  userId            String   @map("user_id")
+  nodeId            String   @unique @map("node_id")
+  publicKey         String   @map("public_key")
+  privateKeyCipher  String   @map("private_key_cipher") @db.Text
+  keyEncryptSalt    String   @map("key_encrypt_salt")
+  keyEncryptIv      String   @map("key_encrypt_iv")
+  keyEncryptTag     String   @map("key_encrypt_tag")
+  createdAt         DateTime @default(now()) @map("created_at")
+  lastUsedAt        DateTime @default(now()) @map("last_used_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessions UserSession[]
+
+  @@index([userId])
+  @@map("user_keys")
+}
+
+model UserSession {
+  tokenHash  String   @id @map("token_hash")
+  userId     String   @map("user_id")
+  userKeyId  String   @map("user_key_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+  expiresAt  DateTime @map("expires_at")
+  revokedAt  DateTime? @map("revoked_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  key  UserKey @relation(fields: [userKeyId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@index([userKeyId])
+  @@map("user_sessions")
 }
 
 /// DEV: latest Yjs encoded state for single-editor / offline reload (P2P remains authoritative for live merge).
@@ -150,6 +199,22 @@ model DocSnapshot {
 
   @@id([groupId, docId])
   @@map("doc_snapshots")
+}
+
+/// Canonical persisted Yjs state (database source of truth for snapshot API).
+model DocState {
+  groupId         String   @map("group_id")
+  docId           String   @map("doc_id")
+  keyVersion      Int      @map("key_version")
+  stateBase64     String   @map("state_base64") @db.Text
+  stateVectorBase64 String? @map("state_vector_base64") @db.Text
+  updatedByNodeId String   @map("updated_by_node_id")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  doc DocNode @relation(fields: [groupId, docId], references: [groupId, docId], onDelete: Cascade)
+
+  @@id([groupId, docId])
+  @@map("doc_states")
 }
 
 /// DEV: server-side doc key material for issuing JWT (replace with HSM in production).

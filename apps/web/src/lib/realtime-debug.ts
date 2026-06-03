@@ -109,3 +109,9 @@ export function subscribeRealtimeDebug(
   listener(getRealtimeDebugSnapshot());
   return () => window.removeEventListener(EVENT_NAME, handler);
 }
+
+/** Avoid circular import: trace export reads snapshot via window hook. */
+if (typeof window !== "undefined") {
+  (window as Window & { __dpeGetRealtimeSnapshot?: () => RealtimeDebugSnapshot }).__dpeGetRealtimeSnapshot =
+    getRealtimeDebugSnapshot;
+}

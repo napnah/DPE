@@ -15,9 +15,11 @@ import {
   loadDocStateFromLocalStorage,
   saveDocStateToLocalStorage,
 } from "../lib/doc-persistence";
-import { loadIdentity, loadPrivateKey } from "../lib/identity";
-import { getActiveMesh } from "../lib/mesh-context";
+import { loadPrivateKey } from "../lib/identity";
+import { useIdentity } from "../lib/use-identity";
+import { getActiveMesh, registerMeshProvider, unregisterMeshProvider } from "../lib/mesh-context";
 import { markRealtimeReject } from "../lib/realtime-debug";
+import { traceRealtime } from "../lib/realtime-trace";
 
 type EditorEngine = {
   doc: Y.Doc;
@@ -67,7 +69,7 @@ export function DocInlineEditor({
   groupId: string;
   docId: string;
 }) {
-  const identity = loadIdentity();
+  const identity = useIdentity();
   const nodeId = identity?.nodeId ?? "";
   const publicKeyBase64Url = identity?.publicKeyBase64Url ?? "";
 
@@ -193,6 +195,7 @@ export function DocInlineEditor({
           send: (frame) => getActiveMesh()?.broadcast(frame),
           onPeerRejected: (_nodeId, reason) => {
             markRealtimeReject(reason);
+            traceRealtime("provider", "merge_rejected", { reason, docId }, "warn");
           },
           onError: (err) => {
             markRealtimeReject(
@@ -201,7 +204,7 @@ export function DocInlineEditor({
           },
         });
 
-        getActiveMesh()?.attachProvider(provider);
+        registerMeshProvider(provider);
 
         let remoteSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -241,6 +244,7 @@ export function DocInlineEditor({
 
         const onDocUpdate = (_update: Uint8Array, origin: unknown) => {
           if (origin === DPE_PROVIDER_ORIGIN) {
+            traceRealtime("yjs", "doc_update_remote", { docId, len: ytext.length }, "debug");
             // Remote update applied via SecureYjsProvider: force the textarea
             // to mirror the new ytext state. This is independent of the
             // ytext.observe path wired in wireTextarea, which can race during
@@ -269,7 +273,7 @@ export function DocInlineEditor({
         if (cancelled) {
           if (remoteSaveTimer) clearTimeout(remoteSaveTimer);
           saveDocStateToLocalStorage(storageKey, doc);
-          getActiveMesh()?.detachProvider(provider);
+          unregisterMeshProvider(provider);
           doc.off("update", onDocUpdate);
           provider.destroy();
           doc.destroy();
@@ -302,7 +306,7 @@ export function DocInlineEditor({
       if (eng) {
         if (eng.remoteSaveTimer) clearTimeout(eng.remoteSaveTimer);
         saveDocStateToLocalStorage(eng.storageKey, eng.doc);
-        getActiveMesh()?.detachProvider(eng.provider);
+        unregisterMeshProvider(eng.provider);
         eng.doc.off("update", eng.onDocUpdate);
         eng.provider.destroy();
         eng.doc.destroy();

@@ -95,6 +95,7 @@ scripts/            verify-p*.mjs、e2e-smoke、security-audit
 - [架构](./docs/architecture.md) · [平台说明](./docs/platform-setup.md)
 - 阶段文档：[P1](./docs/P1.md) [P2](./docs/P2.md) [P3](./docs/P3.md) [P4](./docs/P4.md) [P5](./docs/P5.md) [P6](./docs/P6.md)
 - [双机验收清单](./docs/acceptance-dual-host.md)
+- [本机账号登录与 Yjs 持久化](./docs/account-login-yjs-persistence.md)
 
 ## 故障排查
 

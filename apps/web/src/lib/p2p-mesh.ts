@@ -14,6 +14,7 @@ import {
   markRealtimeRx,
   markRealtimeTx,
 } from "./realtime-debug";
+import { traceRealtime } from "./realtime-trace.js";
 
 function signalingUrl(): string {
   const raw = import.meta.env.VITE_SIGNALING_URL ?? "ws://localhost:3002/ws";
@@ -61,6 +62,25 @@ export class GroupP2pMesh {
   private static readonly DPE_PING = "__dpe_ping__";
   private static readonly DPE_PONG = "__dpe_pong__";
 
+  private static classifyWireMessage(text: string): string {
+    if (text === GroupP2pMesh.DPE_PING) return "ping";
+    if (text === GroupP2pMesh.DPE_PONG) return "pong";
+    try {
+      const json = JSON.parse(text) as Record<string, unknown>;
+      if (json && typeof json === "object") {
+        if ("jwt" in json && "node_id" in json) return "auth_envelope";
+        if (json.type === "sync" && json.update && typeof json.update === "object") {
+          return "signed_update";
+        }
+        if ("ciphertext" in json || "ciphertext_b64" in json) return "signed_update";
+        if ("kind" in json) return `signal_${String(json.kind)}`;
+      }
+      return "json_other";
+    } catch {
+      return "opaque";
+    }
+  }
+
   constructor(private readonly config: MeshConfig) {}
 
   /** Lower node_id always initiates the WebRTC offer for a pair. */
@@ -92,6 +112,7 @@ export class GroupP2pMesh {
         ch.send(GroupP2pMesh.DPE_PING);
       } catch {
         markRealtimeAuthError(`channel_send_failed:${peerId.slice(0, 6)}`);
+        traceRealtime("mesh", "health_ping_failed", { peer: peerId.slice(0, 12) }, "warn");
         this.cleanupPeer(peerId);
         continue;
       }
@@ -99,6 +120,7 @@ export class GroupP2pMesh {
       const seen = this.lastAlive.get(peerId) ?? 0;
       if (seen > 0 && now - seen > GroupP2pMesh.PONG_TIMEOUT_MS) {
         markRealtimeAuthError(`channel_silent:${peerId.slice(0, 6)}`);
+        traceRealtime("mesh", "channel_silent", { peer: peerId.slice(0, 12) }, "warn");
         this.cleanupPeer(peerId);
       }
     }
@@ -164,14 +186,21 @@ export class GroupP2pMesh {
 
   broadcast(text: string): void {
     const bytes = new TextEncoder().encode(text).byteLength;
+    const kind = GroupP2pMesh.classifyWireMessage(text);
+    let sent = 0;
     for (const ch of this.channels.values()) {
       if (ch.readyState !== "open") continue;
       try {
         ch.send(text);
         markRealtimeTx(bytes);
+        sent += 1;
       } catch {
         markRealtimeAuthError("broadcast_send_failed");
+        traceRealtime("mesh", "broadcast_send_failed", { kind, bytes }, "error");
       }
+    }
+    if (kind === "signed_update") {
+      traceRealtime("yjs", "wire_tx", { kind, bytes, channels: sent }, "debug");
     }
   }
 
@@ -200,6 +229,7 @@ export class GroupP2pMesh {
         window.clearTimeout(timeout);
         ws.onclose = null;
         ws.onerror = null;
+        traceRealtime("signal", "ws_open", { url }, "info");
         ok();
       };
       ws.onerror = () => {
@@ -244,6 +274,7 @@ export class GroupP2pMesh {
 
   private cleanupPeer(peerId: string): void {
     if (peerId === this.config.nodeId) return;
+    traceRealtime("mesh", "cleanup_peer", { peer: peerId.slice(0, 12) }, "info");
 
     const timer = this.reconnectTimers.get(peerId);
     if (timer) {
@@ -296,13 +327,26 @@ export class GroupP2pMesh {
 
   private onPeerAuthed(peer: AuthenticatedPeer): void {
     if (this.authenticated.has(peer.nodeId)) return;
+    traceRealtime("auth", "peer_authed", {
+      peer: peer.nodeId.slice(0, 12),
+      role: peer.payload.role,
+      docId: peer.payload.doc_id,
+    });
     this.authenticated.set(peer.nodeId, peer);
     try {
       const session = this.toPeerSession(peer);
       for (const p of this.providers) p.registerPeer(session);
       this.emitPeerStats();
-    } catch {
-      /* retry when members loaded */
+    } catch (e) {
+      traceRealtime(
+        "auth",
+        "register_peer_failed",
+        {
+          peer: peer.nodeId.slice(0, 12),
+          error: e instanceof Error ? e.message : String(e),
+        },
+        "warn",
+      );
     }
   }
 
@@ -316,6 +360,10 @@ export class GroupP2pMesh {
     if (msg.type === "peers" && msg.peers) {
       this.currentRoomPeers.clear();
       for (const p of msg.peers) this.currentRoomPeers.add(p);
+      traceRealtime("signal", "room_peers", {
+        count: msg.peers.length,
+        peers: msg.peers.map((p) => p.slice(0, 8)),
+      });
       this.emitPeerStats(Math.max(0, msg.peers.length - 1));
       for (const peerId of msg.peers) {
         if (peerId === this.config.nodeId) continue;
@@ -415,6 +463,7 @@ export class GroupP2pMesh {
     if (peerId === this.config.nodeId) return;
     if (initiator !== this.shouldInitiate(peerId)) return;
     if (this.connecting.has(peerId)) return;
+    traceRealtime("mesh", "connect_peer", { peer: peerId.slice(0, 12), initiator }, "info");
 
     const existing = this.pcs.get(peerId);
     const existingChannel = this.channels.get(peerId);
@@ -437,6 +486,7 @@ export class GroupP2pMesh {
 
       pc.onconnectionstatechange = () => {
         const st = pc.connectionState;
+        traceRealtime("mesh", "pc_state", { peer: peerId.slice(0, 12), state: st }, "debug");
         if (st === "connected") {
           const pending = this.reconnectTimers.get(peerId);
           if (pending) {
@@ -536,6 +586,7 @@ export class GroupP2pMesh {
     };
 
     channel.onopen = () => {
+      traceRealtime("mesh", "channel_open", { peer: peerId.slice(0, 12) }, "info");
       this.notePeerAlive(peerId);
       this.emitPeerStats();
       void sendAuth().catch(() => {
@@ -609,8 +660,28 @@ export class GroupP2pMesh {
       return;
     }
 
-    markRealtimeRx(new TextEncoder().encode(text).byteLength);
+    const kind = GroupP2pMesh.classifyWireMessage(text);
+    const bytes = new TextEncoder().encode(text).byteLength;
+    markRealtimeRx(bytes);
     this.notePeerAlive(peerId);
+    const providerCount = this.providers.size;
+    if (providerCount === 0) {
+      traceRealtime(
+        "provider",
+        "wire_rx_no_provider",
+        { peer: peerId.slice(0, 12), kind, bytes },
+        "warn",
+      );
+    } else if (kind === "signed_update") {
+      traceRealtime(
+        "yjs",
+        "wire_rx",
+        { peer: peerId.slice(0, 12), kind, bytes, providerCount },
+        "debug",
+      );
+    } else {
+      traceRealtime("mesh", "wire_rx", { peer: peerId.slice(0, 12), kind, bytes, providerCount }, "debug");
+    }
     for (const p of this.providers) {
       void p.handleWireMessage(text);
     }

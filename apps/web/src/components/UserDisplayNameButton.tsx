@@ -1,11 +1,14 @@
-import { useEffect, useId, useRef, useState } from "react";
+﻿import { useEffect, useId, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
+import { clearAuthSession } from "../lib/auth-session";
 import { saveDisplayName } from "../lib/identity";
 import { DISPLAY_NAME_CHANGED_EVENT, useIdentity } from "../lib/use-identity";
 import { shortNodeId } from "../lib/display-names";
 
 export function UserDisplayNameButton() {
   const identity = useIdentity();
+  const navigate = useNavigate();
   const menuId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -35,14 +38,14 @@ export function UserDisplayNameButton() {
   async function save() {
     const trimmed = draft.trim();
     if (!trimmed) {
-      setError("用户名不能为空");
+      setError("显示名不能为空");
       return;
     }
     setBusy(true);
     setError(null);
     try {
       saveDisplayName(trimmed);
-      await api.syncDisplayName(identity!.nodeId, trimmed);
+      await api.syncDisplayName(null, trimmed);
       window.dispatchEvent(new Event(DISPLAY_NAME_CHANGED_EVENT));
       setOpen(false);
     } catch (e) {
@@ -52,6 +55,14 @@ export function UserDisplayNameButton() {
     }
   }
 
+  function logout() {
+    clearAuthSession();
+    setOpen(false);
+    navigate("/login", { replace: true });
+  }
+
+  const accountLabel = identity.username ?? identity.displayName;
+
   return (
     <div className="app-shell__user-menu" ref={panelRef}>
       <button
@@ -60,7 +71,7 @@ export function UserDisplayNameButton() {
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-controls={menuId}
-        title={`节点 ID：${identity.nodeId}`}
+        title={`${accountLabel} · 节点 ${identity.nodeId}`}
         onClick={() => {
           setOpen((v) => !v);
           setError(null);
@@ -70,13 +81,18 @@ export function UserDisplayNameButton() {
         {identity.displayName}
       </button>
       {open && (
-        <div id={menuId} className="app-shell__user-panel" role="dialog" aria-label="修改用户名">
+        <div id={menuId} className="app-shell__user-panel" role="dialog" aria-label="账号菜单">
+          {identity.username && (
+            <p className="app-shell__user-panel__account app-muted">
+              登录账号：<strong>{identity.username}</strong>
+            </p>
+          )}
           <p className="app-muted app-shell__user-panel__hint">
-            仅修改显示名称，节点 ID 不变：
+            节点 ID：
             <code title={identity.nodeId}>{shortNodeId(identity.nodeId, 12)}</code>
           </p>
           <label className="app-field">
-            <span>用户名</span>
+            <span>显示名</span>
             <input
               className="app-input"
               value={draft}
@@ -107,6 +123,15 @@ export function UserDisplayNameButton() {
               保存
             </button>
           </div>
+          <hr className="app-shell__user-panel__divider" />
+          <button
+            type="button"
+            className="app-btn app-shell__user-panel__logout"
+            disabled={busy}
+            onClick={logout}
+          >
+            退出登录
+          </button>
         </div>
       )}
     </div>

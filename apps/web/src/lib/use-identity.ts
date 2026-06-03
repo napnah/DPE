@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { loadIdentity, type StoredIdentity } from "./identity";
+import { AUTH_CHANGED_EVENT, loadIdentity, type StoredIdentity } from "./identity";
 
 export const DISPLAY_NAME_CHANGED_EVENT = "dpe-display-name-changed";
 
@@ -10,7 +10,11 @@ export function useIdentity(): StoredIdentity | null {
   useEffect(() => {
     const sync = () => setIdentity(loadIdentity());
     window.addEventListener(DISPLAY_NAME_CHANGED_EVENT, sync);
-    return () => window.removeEventListener(DISPLAY_NAME_CHANGED_EVENT, sync);
+    window.addEventListener(AUTH_CHANGED_EVENT, sync);
+    return () => {
+      window.removeEventListener(DISPLAY_NAME_CHANGED_EVENT, sync);
+      window.removeEventListener(AUTH_CHANGED_EVENT, sync);
+    };
   }, []);
 
   return identity;

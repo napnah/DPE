@@ -113,7 +113,7 @@
 
 ### 3.5 可观测性不足
 
-**新增：** `apps/web/src/lib/realtime-debug.ts`，群组页展示：
+**新增（计数条）：** `apps/web/src/lib/realtime-debug.ts`，群组页展示：
 
 ```
 Debug · tx <count>/<bytes>B · rx <count>/<bytes>B
@@ -127,6 +127,35 @@ Debug · tx <count>/<bytes>B · rx <count>/<bytes>B
 - 移除 `meshBusyRef`，避免 mesh 重初始化被卡住。
 - 「重试连接」常显，可 `resetRealtimeDebugSnapshot` 后递增 `meshGen` 重建 mesh。
 
+**新增（结构化事件日志，便于远程排查）：**
+
+| 能力 | 说明 |
+|------|------|
+| `apps/web/src/lib/realtime-trace.ts` | 环形缓冲最多 500 条事件；开发模式默认开启（`VITE_DPE_P2P_TRACE=0` 可关） |
+| `apps/web/src/components/RealtimeTracePanel.tsx` | 群组页「P2P 诊断日志」：实时列表、过滤、**复制报告**、**下载 JSON** |
+| `window.dpeRealtimeTrace` | 控制台：`copy()` / `download()` / `getEvents()` / `clear()` |
+| 埋点 | `p2p-mesh`（信令、连接、channel、wire_rx/tx）、`DocInlineEditor`（merge 拒绝）、计数与 `authErr` 同步进 snapshot |
+
+**协作排查流程（推荐）：**
+
+1. 双机用 **同一网段 IP** 打开群组页，展开 **P2P 诊断日志**，确认追踪为「开启」。
+2. 复现问题：A/B 各输入几字，等待 10–15s，观察 Debug 行 `tx/rx` 与日志里是否有 `wire_rx` / `peer_authed` / `channel_open`。
+3. 在**出问题的一侧**点 **复制报告**，将 JSON 发给维护者（或两台各复制一份对比）。
+4. 报告内含 `context`（groupId、docId、origin）、`snapshot`（tx/rx/peers/authErr/reject）与按时间排序的 `events`。
+
+**日志事件速查：**
+
+| 事件 | 含义 |
+|------|------|
+| `signal/ws_open` | 信令 WebSocket 已连接 |
+| `signal/room_peers` | 房间内对等列表更新 |
+| `mesh/connect_peer` | 开始 WebRTC 协商 |
+| `mesh/channel_open` | DataChannel 已 open |
+| `auth/peer_authed` | JWT 握手成功，Provider 可注册对端 |
+| `yjs/wire_tx` / `yjs/wire_rx` | 加密 Yjs 更新已发出/收到 |
+| `provider/merge_rejected` | 合并守卫拒绝（ACL/格式） |
+| `mesh/channel_silent` | 心跳超时，连接被清理 |
+
 ---
 
 ## 4. 涉及文件一览
@@ -134,7 +163,9 @@ Debug · tx <count>/<bytes>B · rx <count>/<bytes>B
 | 文件 | 变更类型 |
 |------|----------|
 | `apps/web/src/lib/p2p-mesh.ts` | WebRTC 协商、心跳、清理、ICE 队列、认证诊断 |
-| `apps/web/src/lib/realtime-debug.ts` | 运行时调试快照（新增） |
+| `apps/web/src/lib/realtime-debug.ts` | 运行时调试快照（计数条） |
+| `apps/web/src/lib/realtime-trace.ts` | 结构化 P2P 事件日志与导出（新增） |
+| `apps/web/src/components/RealtimeTracePanel.tsx` | 群组页诊断面板（新增） |
 | `apps/web/src/pages/GroupPage.tsx` | JWT `doc_id`、Debug UI、错误文案、mesh 重试 |
 | `apps/web/src/components/DocInlineEditor.tsx` | 增量同步 Y.Text、UI 强制同步、Provider 错误上报 |
 | `packages/crypto/src/jwt.ts` | 非 secure context 下纯 JS 验签 |

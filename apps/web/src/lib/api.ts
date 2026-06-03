@@ -1,5 +1,10 @@
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:3001";
 
+function loadSessionToken(): string | null {
+  const raw = localStorage.getItem("dpe_auth_token");
+  return raw?.trim() ? raw.trim() : null;
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -11,10 +16,12 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const session = loadSessionToken();
   const res = await fetch(`${API}${path}`, {
     ...init,
     headers: {
       "content-type": "application/json",
+      ...(session ? { authorization: `Bearer ${session}` } : {}),
       ...init?.headers,
     },
   });
@@ -44,6 +51,17 @@ export type GroupCardRow = GroupSummary & {
   is_owner: boolean;
   my_role_name: string;
   my_role_color: string;
+};
+
+export type AuthIdentity = {
+  userId: string;
+  username: string;
+  nodeId: string;
+  publicKey: string;
+  privateKeyBase64: string;
+  displayName: string;
+  token: string;
+  expiresAt: string;
 };
 
 export type DocNodeRow = {
@@ -98,10 +116,42 @@ export type DocRoleAclRow = {
 };
 
 export const api = {
-  syncDisplayName(nodeId: string, displayName: string) {
+  register(body: {
+    username: string;
+    password: string;
+    display_name?: string;
+    legacy_identity?: {
+      node_id: string;
+      public_key: string;
+      private_key_base64?: string;
+    };
+  }) {
+    return request<AuthIdentity>("/auth/register", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  login(body: { username: string; password: string }) {
+    return request<AuthIdentity>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  me() {
+    return request<{
+      user_id: string;
+      username: string;
+      node_id: string;
+      public_key: string;
+    }>("/auth/me");
+  },
+
+  syncDisplayName(nodeId: string | null, displayName: string) {
     return request<{ ok: boolean; display_name: string }>("/users/me/display-name", {
       method: "POST",
-      body: JSON.stringify({ node_id: nodeId, display_name: displayName }),
+      body: JSON.stringify({ node_id: nodeId ?? undefined, display_name: displayName }),
     });
   },
 
@@ -120,10 +170,9 @@ export const api = {
     }>("/groups", { method: "POST", body: JSON.stringify(body) });
   },
 
-  listAllGroups(nodeId: string) {
-    return request<GroupCardRow[]>(
-      `/users/me/groups/all?node_id=${encodeURIComponent(nodeId)}`,
-    );
+  listAllGroups(nodeId?: string | null) {
+    const query = nodeId ? `?node_id=${encodeURIComponent(nodeId)}` : "";
+    return request<GroupCardRow[]>(`/users/me/groups/all${query}`);
   },
 
   listGroups(nodeId: string, role: "owner" | "member") {
@@ -132,10 +181,9 @@ export const api = {
     );
   },
 
-  listInvitations(nodeId: string) {
-    return request<InvitationRow[]>(
-      `/users/me/invitations?node_id=${encodeURIComponent(nodeId)}`,
-    );
+  listInvitations(nodeId?: string | null) {
+    const query = nodeId ? `?node_id=${encodeURIComponent(nodeId)}` : "";
+    return request<InvitationRow[]>(`/users/me/invitations${query}`);
   },
 
   createInvitation(groupId: string, inviterNodeId: string, inviteeNodeId: string) {
@@ -158,11 +206,11 @@ export const api = {
     );
   },
 
-  rejectInvitation(invitationId: string, nodeId: string) {
-    return request<{ ok: boolean }>(
-      `/invitations/${invitationId}/reject?node_id=${encodeURIComponent(nodeId)}`,
-      { method: "POST" },
-    );
+  rejectInvitation(invitationId: string, nodeId?: string | null) {
+    const query = nodeId ? `?node_id=${encodeURIComponent(nodeId)}` : "";
+    return request<{ ok: boolean }>(`/invitations/${invitationId}/reject${query}`, {
+      method: "POST",
+    });
   },
 
   getGovernance(groupId: string, callerNodeId: string) {
@@ -215,17 +263,18 @@ export const api = {
     );
   },
 
-  refreshJwt(groupId: string, nodeId: string, docId: string) {
+  refreshJwt(groupId: string, nodeId: string | null, docId: string) {
     return request<{ jwt: string; key_version: number; role: number }>(
       `/groups/${groupId}/jwt/refresh`,
       {
         method: "POST",
-        body: JSON.stringify({ node_id: nodeId, doc_id: docId }),
+        body: JSON.stringify({ node_id: nodeId ?? undefined, doc_id: docId }),
       },
     );
   },
 
-  getDocSnapshot(groupId: string, docId: string, nodeId: string) {
+  getDocSnapshot(groupId: string, docId: string, nodeId?: string | null) {
+    const query = nodeId ? `?node_id=${encodeURIComponent(nodeId)}` : "";
     return request<{
       snapshot: {
         state_update_base64: string;
@@ -234,18 +283,18 @@ export const api = {
         updated_by_node_id: string;
       } | null;
     }>(
-      `/groups/${groupId}/docs/${encodeURIComponent(docId)}/snapshot?node_id=${encodeURIComponent(nodeId)}`,
+      `/groups/${groupId}/docs/${encodeURIComponent(docId)}/snapshot${query}`,
     );
   },
 
   putDocSnapshot(
     groupId: string,
     docId: string,
-    body: { node_id: string; state_update_base64: string },
+    body: { node_id?: string | null; state_update_base64: string },
   ) {
     return request<{ ok: boolean }>(
       `/groups/${groupId}/docs/${encodeURIComponent(docId)}/snapshot`,
-      { method: "POST", body: JSON.stringify(body) },
+      { method: "POST", body: JSON.stringify({ ...body, node_id: body.node_id ?? undefined }) },
     );
   },
 

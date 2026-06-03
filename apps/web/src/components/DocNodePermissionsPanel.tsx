@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { isFolderDoc } from "@dpe/shared";
 import { api, type DocNodeRow, type DocRoleAclRow } from "../lib/api";
-import { loadIdentity } from "../lib/identity";
+import { useIdentity } from "../lib/use-identity";
 import { ROLE_LABELS } from "../lib/roles";
 
 export function DocNodePermissionsPanel({
@@ -14,7 +14,7 @@ export function DocNodePermissionsPanel({
   node: DocNodeRow | undefined;
   isOwner: boolean;
 }) {
-  const nodeId = loadIdentity()?.nodeId ?? "";
+  const nodeId = useIdentity()?.nodeId ?? "";
   const [docAcls, setDocAcls] = useState<DocRoleAclRow | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
