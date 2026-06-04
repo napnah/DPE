@@ -27,11 +27,6 @@ export default function DashboardPage() {
     void refresh();
   }, [refresh]);
 
-  useEffect(() => {
-    if (!identity) return;
-    void api.syncDisplayName(null, identity.displayName).catch(() => {});
-  }, [identity?.nodeId, identity?.displayName]);
-
   async function createGroup() {
     if (!identity || !newGroupName.trim()) return;
     setBusy(true);

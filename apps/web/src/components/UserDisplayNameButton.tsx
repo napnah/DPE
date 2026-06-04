@@ -44,8 +44,8 @@ export function UserDisplayNameButton() {
     setBusy(true);
     setError(null);
     try {
-      saveDisplayName(trimmed);
-      await api.syncDisplayName(null, trimmed);
+      const saved = await api.syncDisplayName(null, trimmed);
+      saveDisplayName(saved.display_name);
       window.dispatchEvent(new Event(DISPLAY_NAME_CHANGED_EVENT));
       setOpen(false);
     } catch (e) {

@@ -77,6 +77,7 @@ export type GroupSummary = {
   description?: string;
   control_mode: string;
   owner_node_id: string;
+  issuer_public_key?: string;
   proxy_base_url: string | null;
   created_at: string;
 };
@@ -181,6 +182,7 @@ export const api = {
     return request<{
       user_id: string;
       username: string;
+      display_name: string;
       node_id: string;
       public_key: string;
     }>("/auth/me");

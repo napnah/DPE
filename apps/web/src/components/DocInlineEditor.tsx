@@ -1289,11 +1289,7 @@ export function DocInlineEditor({
         const ytable = doc.getMap("table");
         const storageKey = `dpe_doc_${groupId}_${docId}`;
 
-        const localState = loadDocStateFromLocalStorage(storageKey);
-        if (localState) {
-          applyPersistedDocState(doc, localState, DPE_PROVIDER_ORIGIN);
-        }
-
+        let loadedRemoteSnapshot = false;
         try {
           const remote = await api.getDocSnapshot(groupId, docId, nodeId);
           if (!cancelled && remote.snapshot?.state_update_base64) {
@@ -1302,9 +1298,16 @@ export function DocInlineEditor({
               docStateFromBase64Url(remote.snapshot.state_update_base64),
               DPE_PROVIDER_ORIGIN,
             );
+            loadedRemoteSnapshot = true;
           }
         } catch {
           /* snapshot API optional while offline */
+        }
+        if (!loadedRemoteSnapshot) {
+          const localState = loadDocStateFromLocalStorage(storageKey);
+          if (localState) {
+            applyPersistedDocState(doc, localState, DPE_PROVIDER_ORIGIN);
+          }
         }
 
         const provider = new SecureYjsProvider({
@@ -1393,7 +1396,7 @@ export function DocInlineEditor({
         setMode(getEditorMode(ymeta));
         setStatus(
           writable
-            ? "可编辑 · 输入将自动保存到本机（P2P 连接后同步协作者）"
+            ? "可编辑 · 输入将自动保存到数据库（P2P 连接后同步协作者）"
             : "只读 · 无写入权限",
         );
       } catch (e) {
@@ -1457,7 +1460,7 @@ export function DocInlineEditor({
 
       <p className="app-muted app-doc-inline-editor__status">
         {status}
-        {savedAt ? ` · 本机已保存 ${savedAt}` : null}
+        {savedAt ? ` · 已保存 ${savedAt}` : null}
       </p>
       {error && <p className="app-error">{error}</p>}
       {notice && <p className="app-doc-inline-editor__notice">{notice}</p>}

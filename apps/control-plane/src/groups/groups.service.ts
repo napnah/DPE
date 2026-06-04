@@ -856,6 +856,7 @@ export class GroupsService {
       description: string;
       controlMode: string;
       ownerNodeId: string;
+      issuerPublicKey: string;
       proxyBaseUrl: string | null;
       createdAt: Date;
     },
@@ -869,6 +870,7 @@ export class GroupsService {
         description: g.description,
         control_mode: g.controlMode,
         owner_node_id: g.ownerNodeId,
+        issuer_public_key: g.issuerPublicKey,
         proxy_base_url: g.proxyBaseUrl,
         created_at: g.createdAt,
         is_owner: true,
@@ -895,6 +897,7 @@ export class GroupsService {
       description: g.description,
       control_mode: g.controlMode,
       owner_node_id: g.ownerNodeId,
+      issuer_public_key: g.issuerPublicKey,
       proxy_base_url: g.proxyBaseUrl,
       created_at: g.createdAt,
       is_owner: false,
@@ -909,6 +912,7 @@ export class GroupsService {
     name: string;
     controlMode: string;
     ownerNodeId: string;
+    issuerPublicKey: string;
     proxyBaseUrl: string | null;
     createdAt: Date;
   }) {
@@ -917,6 +921,7 @@ export class GroupsService {
       name: g.name,
       control_mode: g.controlMode,
       owner_node_id: g.ownerNodeId,
+      issuer_public_key: g.issuerPublicKey,
       proxy_base_url: g.proxyBaseUrl,
       created_at: g.createdAt,
     };

@@ -47,6 +47,7 @@ export default function GroupPage() {
   const [nodes, setNodes] = useState<DocNodeRow[]>([]);
   const [groupName, setGroupName] = useState("群组");
   const [isOwner, setIsOwner] = useState(false);
+  const [adminPublicKey, setAdminPublicKey] = useState<string | null>(null);
   const [p2pStatus, setP2pStatus] = useState("未连接");
   const [error, setError] = useState<string | null>(null);
   const [debug, setDebug] = useState<RealtimeDebugSnapshot>(() => getRealtimeDebugSnapshot());
@@ -98,7 +99,10 @@ export default function GroupPage() {
         if (cancelled) return;
         const card = myGroups.find((g) => g.group_id === gid);
         setIsOwner(card?.is_owner ?? false);
-        if (card) setGroupName(card.name);
+        if (card) {
+          setGroupName(card.name);
+          setAdminPublicKey(card.issuer_public_key ?? loadGroupAdminKey(gid));
+        }
         const tree = await api.getTree(gid, nodeId);
         if (cancelled) return;
         setNodes(tree.nodes);
@@ -116,11 +120,11 @@ export default function GroupPage() {
   useEffect(() => {
     if (!nodeId || !gid) return;
 
-    const pkAdmin = loadGroupAdminKey(gid);
+    const pkAdmin = adminPublicKey ?? loadGroupAdminKey(gid);
     if (!pkAdmin) {
       setP2pStatus("未连接");
       setError(
-        `缺少该群组的管理员公钥缓存（pk_admin）。当前 node_id=${nodeId}；请从建群/入群流程进入 group_id=${gid} 以写入本地缓存。`,
+        `缺少该群组的管理员公钥。当前 node_id=${nodeId}；请刷新群组列表或重新进入 group_id=${gid}。`,
       );
       return;
     }
@@ -164,7 +168,7 @@ export default function GroupPage() {
       ac.abort();
       void stopGroupMesh();
     };
-  }, [gid, nodeId, meshGen, syncDocId]);
+  }, [gid, nodeId, adminPublicKey, meshGen, syncDocId]);
 
   async function refreshTree() {
     if (!nodeId) return;

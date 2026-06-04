@@ -31,6 +31,7 @@ type SessionRecord = {
   userId: string;
   userKeyId: string;
   username: string;
+  displayName: string;
   nodeId: string;
   publicKey: string;
 };
@@ -145,6 +146,7 @@ export class AuthService {
       userId: session.userId,
       userKeyId: session.userKeyId,
       username: session.user.username,
+      displayName: session.user.displayName || session.user.username,
       nodeId: session.key.nodeId,
       publicKey: session.key.publicKey,
     };
@@ -190,6 +192,7 @@ export class AuthService {
       const user = await tx.user.create({
         data: {
           username,
+          displayName,
           passwordHash,
         },
       });
@@ -211,6 +214,7 @@ export class AuthService {
       userId: created.user.id,
       userKeyId: created.key.id,
       username: created.user.username,
+      displayName: created.user.displayName || created.user.username,
       nodeId: created.key.nodeId,
       publicKey: created.key.publicKey,
     });
@@ -221,7 +225,7 @@ export class AuthService {
       nodeId,
       publicKey,
       privateKeyBase64,
-      displayName,
+      displayName: created.user.displayName || displayName,
       token: session.token,
       expiresAt: session.expiresAt,
     };
@@ -257,6 +261,7 @@ export class AuthService {
       userId: user.id,
       userKeyId: key.id,
       username: user.username,
+      displayName: user.displayName || user.username,
       nodeId: key.nodeId,
       publicKey: key.publicKey,
     });
@@ -267,7 +272,7 @@ export class AuthService {
       nodeId: key.nodeId,
       publicKey: key.publicKey,
       privateKeyBase64,
-      displayName: user.username,
+      displayName: user.displayName || user.username,
       token: session.token,
       expiresAt: session.expiresAt,
     };
@@ -276,6 +281,7 @@ export class AuthService {
   async me(sessionToken: string): Promise<{
     user_id: string;
     username: string;
+    display_name: string;
     node_id: string;
     public_key: string;
   }> {
@@ -283,9 +289,21 @@ export class AuthService {
     return {
       user_id: s.userId,
       username: s.username,
+      display_name: s.displayName,
       node_id: s.nodeId,
       public_key: s.publicKey,
     };
+  }
+
+  async updateDisplayName(sessionToken: string | undefined, displayName: string): Promise<string | null> {
+    if (!sessionToken) return null;
+    const session = await this.getSessionRecord(sessionToken);
+    const name = this.normalizeDisplayName(displayName);
+    await this.prisma.user.update({
+      where: { id: session.userId },
+      data: { displayName: name },
+    });
+    return name;
   }
 
   async resolveNodeIdFromSession(sessionToken?: string): Promise<string | null> {

@@ -52,7 +52,12 @@ export function clearAuthToken(): void {
 }
 
 export function saveDisplayName(name: string): void {
-  localStorage.setItem(DISPLAY_NAME_KEY, normalizeDisplayName(name));
+  const displayName = normalizeDisplayName(name);
+  localStorage.setItem(DISPLAY_NAME_KEY, displayName);
+  const account = loadIdentity();
+  if (account) {
+    localStorage.setItem(ACCOUNT_KEY, JSON.stringify({ ...account, displayName }));
+  }
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event("dpe-display-name-changed"));
   }

@@ -52,8 +52,10 @@ export class GroupsController {
     @Body() body: UpdateDisplayNameDto,
     @Headers() headers: Record<string, string | string[] | undefined>,
   ) {
+    const token = extractToken(headers);
     const nodeId = await this.resolveNodeId(headers, body.node_id);
-    return this.groups.updateMemberDisplayName(nodeId, body.display_name);
+    const accountDisplayName = await this.auth.updateDisplayName(token, body.display_name);
+    return this.groups.updateMemberDisplayName(nodeId, accountDisplayName ?? body.display_name);
   }
 
   @Get("users/me/groups")

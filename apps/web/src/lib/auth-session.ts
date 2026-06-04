@@ -2,6 +2,7 @@ import type { AuthIdentity } from "./api";
 import {
   clearAccountIdentity,
   clearAuthToken,
+  loadIdentity,
   saveAccountIdentity,
   saveDisplayName,
   setAuthToken,
@@ -44,6 +45,27 @@ export function applyAuthSession(auth: AuthIdentity): StoredIdentity {
   saveDisplayName(auth.displayName);
   saveAccountIdentity(identity);
   return identity;
+}
+
+export function refreshStoredIdentityFromProfile(profile: {
+  user_id?: string;
+  username?: string;
+  display_name?: string;
+  node_id?: string;
+  public_key?: string;
+}): StoredIdentity | null {
+  const current = loadIdentity();
+  if (!current?.privateKeyBase64Url || !profile.node_id || !profile.public_key) return current;
+  const next: StoredIdentity = {
+    ...current,
+    userId: profile.user_id ?? current.userId,
+    username: profile.username ?? current.username,
+    nodeId: profile.node_id,
+    publicKeyBase64Url: profile.public_key,
+    displayName: profile.display_name ?? current.displayName,
+  };
+  saveAccountIdentity(next);
+  return next;
 }
 
 export function clearAuthSession(): void {
