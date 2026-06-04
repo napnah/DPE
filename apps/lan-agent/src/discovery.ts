@@ -17,6 +17,8 @@ export type DiscoveryAdapter = {
   stop(): void;
   getPeers(): LanPeer[];
   registerManual(peer: Omit<LanPeer, "source" | "lastSeen">): void;
+  /** 登录后同步真实 nodeId（与账号 Ed25519 一致），并刷新 mDNS 发布 */
+  setLocalNodeId(nodeId: string): void;
   onUpdate(handler: (peers: LanPeer[]) => void): () => void;
 };
 
@@ -105,6 +107,17 @@ export function createDiscovery(
     }
   };
 
+  const publishMdns = () => {
+    if (!bonjour) return;
+    publish?.stop?.();
+    publish = bonjour.publish({
+      name: identity.displayName,
+      type: DPE_MDNS_SERVICE_TYPE,
+      port: identity.port,
+      txt: { uid: identity.uid, host: identity.host },
+    });
+  };
+
   return {
     start() {
       if (enableMdns) {
@@ -115,12 +128,7 @@ export function createDiscovery(
               typeof Bonjour
             >[0],
           );
-          publish = bonjour.publish({
-            name: identity.displayName,
-            type: DPE_MDNS_SERVICE_TYPE,
-            port: identity.port,
-            txt: { uid: identity.uid, host: identity.host },
-          });
+          publishMdns();
           browser = bonjour.find({ type: DPE_MDNS_SERVICE_TYPE });
           browser.on("up", (svc: Service) => {
             const uid = svc.txt?.uid ?? svc.name;
@@ -182,6 +190,13 @@ export function createDiscovery(
         },
         "manual",
       );
+    },
+    setLocalNodeId(nodeId: string) {
+      const next = nodeId.trim();
+      if (!next || next === identity.uid) return;
+      identity.uid = next;
+      publishMdns();
+      emit();
     },
     onUpdate(handler) {
       handlers.add(handler);

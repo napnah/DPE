@@ -61,6 +61,13 @@ export class SecureYjsProvider {
     this.peers.set(session.nodeId, session);
   }
 
+  /** Update local JWT-derived session without tearing down the Y.Doc (role/key changes). */
+  updateLocalSession(patch: Partial<Pick<LocalDocSession, "role" | "docKey" | "keyVersion">>): void {
+    if (patch.role !== undefined) this.local.role = patch.role;
+    if (patch.docKey !== undefined) this.local.docKey = patch.docKey;
+    if (patch.keyVersion !== undefined) this.local.keyVersion = patch.keyVersion;
+  }
+
   unregisterPeer(nodeId: string): void {
     this.peers.delete(nodeId);
   }

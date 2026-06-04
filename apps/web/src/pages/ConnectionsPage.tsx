@@ -23,16 +23,20 @@ export default function ConnectionsPage() {
     setError(null);
     try {
       setLanError(null);
-      const [net, disc, inv] = await Promise.all([
+      const [net, disc] = await Promise.all([
         fetchNetwork().catch((e) => {
           setLanError(e instanceof Error ? e.message : "lan-agent 不可用");
           return null;
         }),
         fetchDiscovery().catch(() => ({ peers: [] })),
-        api.listInvitations(),
       ]);
       setNetwork(net);
-      setPeers(disc.peers ?? []);
+      const peerList = disc.peers ?? [];
+      setPeers(peerList);
+      const inv = await api.listInvitationsFederated(
+        identity.nodeId,
+        peerList.map((p) => p.host),
+      );
       setInvitations(inv);
     } catch (e) {
       setError(e instanceof Error ? e.message : "加载失败");
@@ -62,11 +66,15 @@ export default function ConnectionsPage() {
       const sk = loadPrivateKey();
       if (!sk) return;
       const pk = await importPublicKeyBase64Url(identity.publicKeyBase64Url);
-      const res = await api.acceptInvitation(inv.id, {
-        node_id: identity.nodeId,
-        public_key: exportPublicKeyBase64Url(pk),
-        display_name: identity.displayName,
-      });
+      const res = await api.acceptInvitation(
+        inv.id,
+        {
+          node_id: identity.nodeId,
+          public_key: exportPublicKeyBase64Url(pk),
+          display_name: identity.displayName,
+        },
+        inv.control_plane_url,
+      );
       saveGroupAdminKey(res.group_id, res.pk_admin);
       await refresh();
       setToast(`已加入「${inv.group?.name ?? inv.groupId}」`);
@@ -81,7 +89,7 @@ export default function ConnectionsPage() {
     if (!identity) return;
     setBusy(true);
     try {
-      await api.rejectInvitation(inv.id);
+      await api.rejectInvitation(inv.id, identity.nodeId, inv.control_plane_url);
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "拒绝失败");
@@ -126,7 +134,12 @@ export default function ConnectionsPage() {
               <li key={inv.id} className="app-invite-item">
                 <div>
                   <strong>{inv.group?.name ?? inv.groupId}</strong>
-                  <p className="app-muted">来自群组邀请</p>
+                  <p className="app-muted">
+                    来自群组邀请
+                    {inv.control_plane_url && inv.control_plane_url !== api.getApiBaseUrl()
+                      ? ` · 群主节点 ${new URL(inv.control_plane_url).host}`
+                      : ""}
+                  </p>
                 </div>
                 <div className="app-row-actions">
                   <button type="button" className="app-btn app-btn--primary" disabled={busy} onClick={() => void acceptInvitation(inv)}>
@@ -168,7 +181,7 @@ export default function ConnectionsPage() {
             <li key={`${p.uid}-${p.host}`}>
               <strong>{peerDisplayLabel(p)}</strong>
               <span className="app-muted">
-                {p.host}:{p.port} · {p.source}
+                节点 ID：<code>{p.uid}</code> · {p.host}:{p.port} · {p.source}
               </span>
             </li>
           ))}

@@ -99,6 +99,15 @@ async function main() {
     };
   });
 
+  app.post<{ Body: { node_id?: string } }>("/identity", async (req, reply) => {
+    const nodeId = req.body?.node_id?.trim();
+    if (!nodeId) {
+      return reply.status(400).send({ error: "node_id required" });
+    }
+    discovery.setLocalNodeId(nodeId);
+    return { ok: true, node_id: nodeId };
+  });
+
   app.post<{ Body: { uid: string; host: string; port: number; name?: string } }>(
     "/peers/manual",
     async (req, reply) => {

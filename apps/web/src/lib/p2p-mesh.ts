@@ -173,12 +173,43 @@ export class GroupP2pMesh {
 
   attachProvider(provider: SecureYjsProvider): void {
     this.providers.add(provider);
-    for (const peer of this.authenticated.values()) {
-      try {
-        provider.registerPeer(this.toPeerSession(peer));
-      } catch {
-        /* pk map may lag */
+    this.syncProvidersWithAuthenticated();
+  }
+
+  /** Re-send AuthEnvelope on every open channel (e.g. after ACL/JWT role change). */
+  async reauthAllChannels(): Promise<void> {
+    const tasks: Promise<void>[] = [];
+    for (const [peerId, ch] of this.channels) {
+      if (ch.readyState !== "open") continue;
+      tasks.push(this.sendAuthToPeer(peerId, ch, true));
+    }
+    await Promise.all(tasks);
+  }
+
+  private syncProvidersWithAuthenticated(): void {
+    for (const provider of this.providers) {
+      for (const peer of this.authenticated.values()) {
+        try {
+          provider.registerPeer(this.toPeerSession(peer));
+        } catch {
+          /* pk map may lag */
+        }
       }
+    }
+  }
+
+  private ensurePeerOnProviders(peerId: string): void {
+    const auth = this.authenticated.get(peerId);
+    if (!auth) return;
+    try {
+      const session = this.toPeerSession(auth);
+      for (const provider of this.providers) {
+        if (!provider.getPeerSessions().has(peerId)) {
+          provider.registerPeer(session);
+        }
+      }
+    } catch {
+      /* pk map may lag */
     }
   }
 
@@ -382,8 +413,7 @@ export class GroupP2pMesh {
     });
     this.authenticated.set(peer.nodeId, peer);
     try {
-      const session = this.toPeerSession(peer);
-      for (const p of this.providers) p.registerPeer(session);
+      this.syncProvidersWithAuthenticated();
       this.emitPeerStats();
     } catch (e) {
       traceRealtime(
@@ -586,6 +616,36 @@ export class GroupP2pMesh {
     }
   }
 
+  private async sendAuthToPeer(
+    peerId: string,
+    channel: RTCDataChannel,
+    force = false,
+  ): Promise<void> {
+    if (channel.readyState !== "open") {
+      markRealtimeAuthError("auth_not_open_before_jwt");
+      return;
+    }
+
+    const jwt = await this.config.getJwt();
+    if (channel.readyState !== "open") {
+      markRealtimeAuthError("auth_not_open_after_jwt");
+      await new Promise((r) => setTimeout(r, 150));
+      if (channel.readyState !== "open") return;
+    }
+
+    const envelope: AuthEnvelope = {
+      type: "auth",
+      node_id: this.config.nodeId,
+      jwt,
+    };
+    try {
+      channel.send(serializeAuthEnvelope(envelope));
+      traceRealtime("auth", "auth_sent", { peer: peerId.slice(0, 12), force }, "debug");
+    } catch {
+      markRealtimeAuthError("auth_send_failed");
+    }
+  }
+
   private wireChannel(peerId: string, channel: RTCDataChannel): void {
     if (peerId === this.config.nodeId) return;
 
@@ -602,31 +662,8 @@ export class GroupP2pMesh {
     }
 
     this.channels.set(peerId, channel);
-    let sentAuth = false;
 
-    const sendAuth = async () => {
-      if (sentAuth) return;
-      if (channel.readyState !== "open") {
-        markRealtimeAuthError("auth_not_open_before_jwt");
-        return;
-      }
-      const jwt = await this.config.getJwt();
-      if (channel.readyState !== "open") {
-        markRealtimeAuthError("auth_not_open_after_jwt");
-        return;
-      }
-      const envelope: AuthEnvelope = {
-        type: "auth",
-        node_id: this.config.nodeId,
-        jwt,
-      };
-      try {
-        channel.send(serializeAuthEnvelope(envelope));
-        sentAuth = true;
-      } catch {
-        markRealtimeAuthError("auth_send_failed");
-      }
-    };
+    const sendAuth = () => this.sendAuthToPeer(peerId, channel, false);
 
     channel.onopen = () => {
       traceRealtime("mesh", "channel_open", { peer: peerId.slice(0, 12) }, "info");
@@ -725,6 +762,7 @@ export class GroupP2pMesh {
     } else {
       traceRealtime("mesh", "wire_rx", { peer: peerId.slice(0, 12), kind, bytes, providerCount }, "debug");
     }
+    this.ensurePeerOnProviders(peerId);
     for (const p of this.providers) {
       void p.handleWireMessage(text);
     }

@@ -18,6 +18,7 @@ export function getActiveMesh(): GroupP2pMesh | null {
 export function registerMeshProvider(provider: SecureYjsProvider): void {
   registeredProviders.add(provider);
   active?.attachProvider(provider);
+  void active?.reauthAllChannels();
 }
 
 export function unregisterMeshProvider(provider: SecureYjsProvider): void {

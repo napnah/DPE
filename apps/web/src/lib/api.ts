@@ -1,4 +1,38 @@
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:3001";
+const CONTROL_PLANE_PORT = Number(import.meta.env.VITE_CONTROL_PLANE_PORT ?? 3001);
+
+export function getApiBaseUrl(): string {
+  return API.replace(/\/$/, "");
+}
+
+function peerControlPlaneUrl(host: string): string {
+  const h = host.trim();
+  if (!h || h === "127.0.0.1" || h === "localhost") return getApiBaseUrl();
+  return `http://${h}:${CONTROL_PLANE_PORT}`;
+}
+
+async function requestAt<T>(base: string, path: string, init?: RequestInit): Promise<T> {
+  const root = base.replace(/\/$/, "");
+  const session = loadSessionToken();
+  const res = await fetch(`${root}${path}`, {
+    ...init,
+    headers: {
+      "content-type": "application/json",
+      ...(session ? { authorization: `Bearer ${session}` } : {}),
+      ...init?.headers,
+    },
+  });
+  const text = await res.text();
+  const body = text ? (JSON.parse(text) as T) : ({} as T);
+  if (!res.ok) {
+    const msg =
+      typeof body === "object" && body && "message" in body
+        ? String((body as { message: unknown }).message)
+        : text || res.statusText;
+    throw new ApiError(res.status, msg);
+  }
+  return body;
+}
 
 function loadSessionToken(): string | null {
   const raw = localStorage.getItem("dpe_auth_token");
@@ -79,6 +113,8 @@ export type InvitationRow = {
   inviteeNodeId: string;
   status: string;
   group: { id: string; name: string; issuerPublicKey: string };
+  /** 邀请记录所在的控制平面（群主节点）；接受/拒绝须打到同一地址 */
+  control_plane_url?: string;
 };
 
 export type GovernancePayload = {
@@ -116,6 +152,8 @@ export type DocRoleAclRow = {
 };
 
 export const api = {
+  getApiBaseUrl,
+
   register(body: {
     username: string;
     password: string;
@@ -186,6 +224,34 @@ export const api = {
     return request<InvitationRow[]>(`/users/me/invitations${query}`);
   },
 
+  /** 本机 + 已发现邻居上的待处理邀请（双机各自数据库时，邀请在群主节点） */
+  async listInvitationsFederated(nodeId: string, peerHosts: string[]) {
+    const bases = new Set<string>([getApiBaseUrl()]);
+    for (const host of peerHosts) bases.add(peerControlPlaneUrl(host));
+    const chunks = await Promise.all(
+      [...bases].map(async (base) => {
+        try {
+          const rows = await requestAt<InvitationRow[]>(
+            base,
+            `/users/me/invitations?node_id=${encodeURIComponent(nodeId)}`,
+          );
+          return rows.map((r) => ({ ...r, control_plane_url: base }));
+        } catch {
+          return [];
+        }
+      }),
+    );
+    const seen = new Set<string>();
+    const out: InvitationRow[] = [];
+    for (const row of chunks.flat()) {
+      const key = `${row.control_plane_url ?? ""}:${row.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(row);
+    }
+    return out;
+  },
+
   createInvitation(groupId: string, inviterNodeId: string, inviteeNodeId: string) {
     return request<{ id: string }>(
       `/groups/${groupId}/invitations?inviter_node_id=${encodeURIComponent(inviterNodeId)}`,
@@ -199,16 +265,24 @@ export const api = {
   acceptInvitation(
     invitationId: string,
     body: { node_id: string; public_key: string; display_name?: string },
+    controlPlaneUrl?: string,
   ) {
-    return request<{ group_id: string; pk_admin: string }>(
+    const base = controlPlaneUrl?.replace(/\/$/, "") ?? getApiBaseUrl();
+    return requestAt<{ group_id: string; pk_admin: string }>(
+      base,
       `/invitations/${invitationId}/accept`,
       { method: "POST", body: JSON.stringify(body) },
     );
   },
 
-  rejectInvitation(invitationId: string, nodeId?: string | null) {
+  rejectInvitation(
+    invitationId: string,
+    nodeId?: string | null,
+    controlPlaneUrl?: string,
+  ) {
     const query = nodeId ? `?node_id=${encodeURIComponent(nodeId)}` : "";
-    return request<{ ok: boolean }>(`/invitations/${invitationId}/reject${query}`, {
+    const base = controlPlaneUrl?.replace(/\/$/, "") ?? getApiBaseUrl();
+    return requestAt<{ ok: boolean }>(base, `/invitations/${invitationId}/reject${query}`, {
       method: "POST",
     });
   },

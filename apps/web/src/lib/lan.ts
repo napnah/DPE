@@ -41,3 +41,18 @@ export async function searchPeers(uidPrefix: string): Promise<{ peers: LanPeer[]
 export function getLanAgentBaseUrl(): string {
   return LAN;
 }
+
+/** 将登录后的 nodeId 同步到 lan-agent/mDNS，避免邻居列表显示错误的 DPE_NODE_ID */
+export async function syncLanAgentNodeId(nodeId: string): Promise<void> {
+  const id = nodeId.trim();
+  if (!id) return;
+  try {
+    await lanFetch("/identity", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: id }),
+    });
+  } catch {
+    /* lan-agent 未启动时忽略 */
+  }
+}
