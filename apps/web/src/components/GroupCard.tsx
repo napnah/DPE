@@ -34,13 +34,19 @@ export function GroupCard({
 }) {
   const gradient = pickGradient(group.group_id);
   const textColor = "#232629";
+  const badgeStyle = group.is_owner
+    ? {
+        background: "linear-gradient(135deg, #f7d36b 0%, #d99a22 100%)",
+        color: "#3f2b05",
+      }
+    : { background: group.my_role_color, color: "#fff" };
 
   return (
     <Link to={to ?? `/groups/${group.group_id}`} className="group-card">
       <div className="group-card__visual" style={{ background: gradient }}>
         <span
           className="group-card__badge"
-          style={{ background: group.my_role_color, color: "#fff" }}
+          style={badgeStyle}
         >
           {group.my_role_name}
         </span>
