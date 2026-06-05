@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { exportPublicKeyBase64Url, importPublicKeyBase64Url } from "@dpe/crypto";
-import { api, saveGroupAdminKey, type InvitationRow } from "../lib/api";
+import { api, saveGroupAdminKey, saveGroupControlPlaneUrl, type InvitationRow } from "../lib/api";
 import { fetchDiscovery, fetchNetwork, getLanAgentBaseUrl, searchPeers, type LanPeer } from "../lib/lan";
 import { useIdentity } from "../lib/use-identity";
 import { peerDisplayLabel } from "../lib/display-names";
 
 export default function ConnectionsPage() {
+  const navigate = useNavigate();
   const identity = useIdentity();
   const [network, setNetwork] = useState<Record<string, unknown> | null>(null);
   const [lanError, setLanError] = useState<string | null>(null);
@@ -35,7 +36,7 @@ export default function ConnectionsPage() {
       setPeers(peerList);
       const inv = await api.listInvitationsFederated(
         identity.nodeId,
-        peerList.map((p) => p.host),
+        peerList,
       );
       setInvitations(inv);
     } catch (e) {
@@ -75,9 +76,12 @@ export default function ConnectionsPage() {
         },
         inv.control_plane_url,
       );
+      const cp = (inv.control_plane_url ?? api.getApiBaseUrl()).replace(/\/$/, "");
       saveGroupAdminKey(res.group_id, res.pk_admin);
+      saveGroupControlPlaneUrl(res.group_id, cp);
       await refresh();
       setToast(`已加入「${inv.group?.name ?? inv.groupId}」`);
+      navigate(`/groups/${res.group_id}?control=${encodeURIComponent(cp)}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "接受失败");
     } finally {

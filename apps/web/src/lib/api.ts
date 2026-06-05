@@ -1,14 +1,9 @@
+import type { LanPeer } from "./lan";
+
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:3001";
-const CONTROL_PLANE_PORT = Number(import.meta.env.VITE_CONTROL_PLANE_PORT ?? 3001);
 
 export function getApiBaseUrl(): string {
   return API.replace(/\/$/, "");
-}
-
-function peerControlPlaneUrl(host: string): string {
-  const h = host.trim();
-  if (!h || h === "127.0.0.1" || h === "localhost") return getApiBaseUrl();
-  return `http://${h}:${CONTROL_PLANE_PORT}`;
 }
 
 async function requestAt<T>(base: string, path: string, init?: RequestInit): Promise<T> {
@@ -80,6 +75,7 @@ export type GroupSummary = {
   issuer_public_key?: string;
   proxy_base_url: string | null;
   created_at: string;
+  control_plane_url?: string;
 };
 
 export type GroupCardRow = GroupSummary & {
@@ -215,6 +211,34 @@ export const api = {
     return request<GroupCardRow[]>(`/users/me/groups/all${query}`);
   },
 
+  async listAllGroupsFederated(nodeId: string | null | undefined, peers: Pick<LanPeer, "controlUrl">[]) {
+    const query = nodeId ? `?node_id=${encodeURIComponent(nodeId)}` : "";
+    const bases = new Set<string>([getApiBaseUrl()]);
+    for (const peer of peers) {
+      const base = peer.controlUrl?.trim();
+      if (base) bases.add(base);
+    }
+    const chunks = await Promise.all(
+      [...bases].map(async (base) => {
+        try {
+          const rows = await requestAt<GroupCardRow[]>(base, `/users/me/groups/all${query}`);
+          return rows.map((row) => ({ ...row, control_plane_url: base }));
+        } catch {
+          return [];
+        }
+      }),
+    );
+    const seen = new Set<string>();
+    const out: GroupCardRow[] = [];
+    for (const row of chunks.flat()) {
+      const key = `${row.control_plane_url ?? ""}:${row.group_id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(row);
+    }
+    return out;
+  },
+
   listGroups(nodeId: string, role: "owner" | "member") {
     return request<GroupSummary[]>(
       `/users/me/groups?node_id=${encodeURIComponent(nodeId)}&role=${role}`,
@@ -227,9 +251,12 @@ export const api = {
   },
 
   /** 本机 + 已发现邻居上的待处理邀请（双机各自数据库时，邀请在群主节点） */
-  async listInvitationsFederated(nodeId: string, peerHosts: string[]) {
+  async listInvitationsFederated(nodeId: string, peers: Pick<LanPeer, "controlUrl">[]) {
     const bases = new Set<string>([getApiBaseUrl()]);
-    for (const host of peerHosts) bases.add(peerControlPlaneUrl(host));
+    for (const peer of peers) {
+      const base = peer.controlUrl?.trim();
+      if (base) bases.add(base);
+    }
     const chunks = await Promise.all(
       [...bases].map(async (base) => {
         try {
@@ -254,14 +281,15 @@ export const api = {
     return out;
   },
 
-  createInvitation(groupId: string, inviterNodeId: string, inviteeNodeId: string) {
-    return request<{ id: string }>(
-      `/groups/${groupId}/invitations?inviter_node_id=${encodeURIComponent(inviterNodeId)}`,
-      {
-        method: "POST",
-        body: JSON.stringify({ invitee_node_id: inviteeNodeId }),
-      },
-    );
+  createInvitation(groupId: string, inviterNodeId: string, inviteeNodeId: string, controlPlaneUrl?: string) {
+    const path = `/groups/${groupId}/invitations?inviter_node_id=${encodeURIComponent(inviterNodeId)}`;
+    const init = {
+      method: "POST",
+      body: JSON.stringify({ invitee_node_id: inviteeNodeId }),
+    };
+    return controlPlaneUrl
+      ? requestAt<{ id: string }>(controlPlaneUrl, path, init)
+      : request<{ id: string }>(path, init);
   },
 
   acceptInvitation(
@@ -289,10 +317,11 @@ export const api = {
     });
   },
 
-  getGovernance(groupId: string, callerNodeId: string) {
-    return request<GovernancePayload>(
-      `/groups/${groupId}/governance?caller_node_id=${encodeURIComponent(callerNodeId)}`,
-    );
+  getGovernance(groupId: string, callerNodeId: string, controlPlaneUrl?: string) {
+    const path = `/groups/${groupId}/governance?caller_node_id=${encodeURIComponent(callerNodeId)}`;
+    return controlPlaneUrl
+      ? requestAt<GovernancePayload>(controlPlaneUrl, path)
+      : request<GovernancePayload>(path);
   },
 
   updateGovernance(
@@ -307,119 +336,146 @@ export const api = {
       roles?: { id?: string; name: string; color?: string }[];
       delete_role_ids?: string[];
     },
+    controlPlaneUrl?: string,
   ) {
-    return request<{ ok: boolean }>(`/groups/${groupId}/governance`, {
+    const path = `/groups/${groupId}/governance`;
+    const init = {
       method: "POST",
       body: JSON.stringify(body),
-    });
+    };
+    return controlPlaneUrl
+      ? requestAt<{ ok: boolean }>(controlPlaneUrl, path, init)
+      : request<{ ok: boolean }>(path, init);
   },
 
-  dissolveGroup(groupId: string, callerNodeId: string) {
-    return request<{ ok: boolean }>(
-      `/groups/${groupId}/dissolve?caller_node_id=${encodeURIComponent(callerNodeId)}`,
-      { method: "POST" },
-    );
+  dissolveGroup(groupId: string, callerNodeId: string, controlPlaneUrl?: string) {
+    const path = `/groups/${groupId}/dissolve?caller_node_id=${encodeURIComponent(callerNodeId)}`;
+    const init = { method: "POST" };
+    return controlPlaneUrl
+      ? requestAt<{ ok: boolean }>(controlPlaneUrl, path, init)
+      : request<{ ok: boolean }>(path, init);
   },
 
-  getDocRoleAcls(groupId: string, docId: string, callerNodeId: string) {
-    return request<DocRoleAclRow>(
-      `/groups/${groupId}/docs/${docId}/role-acls?caller_node_id=${encodeURIComponent(callerNodeId)}`,
-    );
+  getDocRoleAcls(groupId: string, docId: string, callerNodeId: string, controlPlaneUrl?: string) {
+    const path = `/groups/${groupId}/docs/${docId}/role-acls?caller_node_id=${encodeURIComponent(callerNodeId)}`;
+    return controlPlaneUrl
+      ? requestAt<DocRoleAclRow>(controlPlaneUrl, path)
+      : request<DocRoleAclRow>(path);
   },
 
-  getTree(groupId: string, nodeId: string) {
-    return request<{ nodes: DocNodeRow[] }>(
-      `/groups/${groupId}/tree?node_id=${encodeURIComponent(nodeId)}`,
-    );
+  getTree(groupId: string, nodeId: string, controlPlaneUrl?: string) {
+    const path = `/groups/${groupId}/tree?node_id=${encodeURIComponent(nodeId)}`;
+    return controlPlaneUrl
+      ? requestAt<{ nodes: DocNodeRow[] }>(controlPlaneUrl, path)
+      : request<{ nodes: DocNodeRow[] }>(path);
   },
 
-  listMembers(groupId: string) {
-    return request<{ members: { node_id: string; public_key: string }[] }>(
-      `/groups/${groupId}/members`,
-    );
+  listMembers(groupId: string, controlPlaneUrl?: string) {
+    return controlPlaneUrl
+      ? requestAt<{ members: { node_id: string; public_key: string }[] }>(
+          controlPlaneUrl,
+          `/groups/${groupId}/members`,
+        )
+      : request<{ members: { node_id: string; public_key: string }[] }>(
+          `/groups/${groupId}/members`,
+        );
   },
 
-  refreshJwt(groupId: string, nodeId: string | null, docId: string) {
-    return request<{ jwt: string; key_version: number; role: number }>(
-      `/groups/${groupId}/jwt/refresh`,
-      {
-        method: "POST",
-        body: JSON.stringify({ node_id: nodeId ?? undefined, doc_id: docId }),
-      },
-    );
+  refreshJwt(groupId: string, nodeId: string | null, docId: string, controlPlaneUrl?: string) {
+    const init = {
+      method: "POST",
+      body: JSON.stringify({ node_id: nodeId ?? undefined, doc_id: docId }),
+    };
+    return controlPlaneUrl
+      ? requestAt<{ jwt: string; key_version: number; role: number }>(
+          controlPlaneUrl,
+          `/groups/${groupId}/jwt/refresh`,
+          init,
+        )
+      : request<{ jwt: string; key_version: number; role: number }>(
+          `/groups/${groupId}/jwt/refresh`,
+          init,
+        );
   },
 
-  getDocSnapshot(groupId: string, docId: string, nodeId?: string | null) {
+  getDocSnapshot(groupId: string, docId: string, nodeId?: string | null, controlPlaneUrl?: string) {
     const query = nodeId ? `?node_id=${encodeURIComponent(nodeId)}` : "";
-    return request<{
+    const path = `/groups/${groupId}/docs/${encodeURIComponent(docId)}/snapshot${query}`;
+    return controlPlaneUrl
+      ? requestAt<{
+          snapshot: {
+            state_update_base64: string;
+            key_version: number;
+            updated_at: string;
+            updated_by_node_id: string;
+          } | null;
+        }>(controlPlaneUrl, path)
+      : request<{
       snapshot: {
         state_update_base64: string;
         key_version: number;
         updated_at: string;
         updated_by_node_id: string;
       } | null;
-    }>(
-      `/groups/${groupId}/docs/${encodeURIComponent(docId)}/snapshot${query}`,
-    );
+        }>(path);
   },
 
   putDocSnapshot(
     groupId: string,
     docId: string,
     body: { node_id?: string | null; state_update_base64: string },
+    controlPlaneUrl?: string,
   ) {
-    return request<{ ok: boolean }>(
-      `/groups/${groupId}/docs/${encodeURIComponent(docId)}/snapshot`,
-      { method: "POST", body: JSON.stringify({ ...body, node_id: body.node_id ?? undefined }) },
-    );
+    const path = `/groups/${groupId}/docs/${encodeURIComponent(docId)}/snapshot`;
+    const init = {
+      method: "POST",
+      body: JSON.stringify({ ...body, node_id: body.node_id ?? undefined }),
+    };
+    return controlPlaneUrl
+      ? requestAt<{ ok: boolean }>(controlPlaneUrl, path, init)
+      : request<{ ok: boolean }>(path, init);
   },
 
   setDocRoleAcl(
     groupId: string,
     callerNodeId: string,
     body: { doc_id: string; group_role_id: string; access_level: number },
+    controlPlaneUrl?: string,
   ) {
-    return request<{ ok: boolean }>(
-      `/groups/${groupId}/rpc?caller_node_id=${encodeURIComponent(callerNodeId)}`,
-      {
-        method: "POST",
-        body: JSON.stringify({ op: "SetDocRoleAcl", ...body }),
-      },
-    );
+    const path = `/groups/${groupId}/rpc?caller_node_id=${encodeURIComponent(callerNodeId)}`;
+    const init = { method: "POST", body: JSON.stringify({ op: "SetDocRoleAcl", ...body }) };
+    return controlPlaneUrl
+      ? requestAt<{ ok: boolean }>(controlPlaneUrl, path, init)
+      : request<{ ok: boolean }>(path, init);
   },
 
   createChild(
     groupId: string,
     callerNodeId: string,
     body: { parent_doc_id: string; doc_id: string; title?: string; is_folder?: boolean },
+    controlPlaneUrl?: string,
   ) {
-    return request<{ ok: boolean; doc_id: string }>(
-      `/groups/${groupId}/rpc?caller_node_id=${encodeURIComponent(callerNodeId)}`,
-      {
-        method: "POST",
-        body: JSON.stringify({ op: "CreateChild", ...body }),
-      },
-    );
+    const path = `/groups/${groupId}/rpc?caller_node_id=${encodeURIComponent(callerNodeId)}`;
+    const init = { method: "POST", body: JSON.stringify({ op: "CreateChild", ...body }) };
+    return controlPlaneUrl
+      ? requestAt<{ ok: boolean; doc_id: string }>(controlPlaneUrl, path, init)
+      : request<{ ok: boolean; doc_id: string }>(path, init);
   },
 
-  deleteDoc(groupId: string, callerNodeId: string, docId: string) {
-    return request<{ ok: boolean }>(
-      `/groups/${groupId}/rpc?caller_node_id=${encodeURIComponent(callerNodeId)}`,
-      {
-        method: "POST",
-        body: JSON.stringify({ op: "DeleteDoc", doc_id: docId }),
-      },
-    );
+  deleteDoc(groupId: string, callerNodeId: string, docId: string, controlPlaneUrl?: string) {
+    const path = `/groups/${groupId}/rpc?caller_node_id=${encodeURIComponent(callerNodeId)}`;
+    const init = { method: "POST", body: JSON.stringify({ op: "DeleteDoc", doc_id: docId }) };
+    return controlPlaneUrl
+      ? requestAt<{ ok: boolean }>(controlPlaneUrl, path, init)
+      : request<{ ok: boolean }>(path, init);
   },
 
-  renameDoc(groupId: string, callerNodeId: string, docId: string, title: string) {
-    return request<{ ok: boolean }>(
-      `/groups/${groupId}/rpc?caller_node_id=${encodeURIComponent(callerNodeId)}`,
-      {
-        method: "POST",
-        body: JSON.stringify({ op: "RenameDoc", doc_id: docId, title }),
-      },
-    );
+  renameDoc(groupId: string, callerNodeId: string, docId: string, title: string, controlPlaneUrl?: string) {
+    const path = `/groups/${groupId}/rpc?caller_node_id=${encodeURIComponent(callerNodeId)}`;
+    const init = { method: "POST", body: JSON.stringify({ op: "RenameDoc", doc_id: docId, title }) };
+    return controlPlaneUrl
+      ? requestAt<{ ok: boolean }>(controlPlaneUrl, path, init)
+      : request<{ ok: boolean }>(path, init);
   },
 };
 
@@ -429,4 +485,28 @@ export function saveGroupAdminKey(groupId: string, pkAdmin: string) {
 
 export function loadGroupAdminKey(groupId: string): string | null {
   return localStorage.getItem(`dpe_group_${groupId}_pk_admin`);
+}
+
+/** 群主控制平面地址（对等部署时成员须访问群主节点 API） */
+export function saveGroupControlPlaneUrl(groupId: string, controlPlaneUrl: string) {
+  const url = controlPlaneUrl.trim().replace(/\/$/, "");
+  if (!url) return;
+  localStorage.setItem(`dpe_group_${groupId}_control_plane`, url);
+}
+
+export function loadGroupControlPlaneUrl(groupId: string): string | null {
+  const raw = localStorage.getItem(`dpe_group_${groupId}_control_plane`);
+  return raw?.trim() ? raw.trim().replace(/\/$/, "") : null;
+}
+
+/** 解析群组应使用的控制平面：URL 参数 > 本地缓存 > 本机 API */
+export function resolveGroupControlPlaneUrl(
+  groupId: string,
+  fromQuery?: string | null,
+): string | undefined {
+  const q = fromQuery?.trim().replace(/\/$/, "");
+  if (q) return q;
+  const saved = loadGroupControlPlaneUrl(groupId);
+  if (saved) return saved;
+  return undefined;
 }

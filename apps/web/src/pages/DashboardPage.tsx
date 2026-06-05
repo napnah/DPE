@@ -2,12 +2,14 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { CopyableField } from "../components/CopyableField";
 import { GroupCard } from "../components/GroupCard";
-import { api, saveGroupAdminKey, type GroupCardRow } from "../lib/api";
+import { api, saveGroupAdminKey, saveGroupControlPlaneUrl, type GroupCardRow } from "../lib/api";
+import { fetchDiscovery, type LanPeer } from "../lib/lan";
 import { useIdentity } from "../lib/use-identity";
 
 export default function DashboardPage() {
   const identity = useIdentity();
   const [groups, setGroups] = useState<GroupCardRow[]>([]);
+  const [peers, setPeers] = useState<LanPeer[]>([]);
   const [newGroupName, setNewGroupName] = useState("");
   const [newGroupDesc, setNewGroupDesc] = useState("");
   const [busy, setBusy] = useState(false);
@@ -17,7 +19,9 @@ export default function DashboardPage() {
     if (!identity) return;
     setError(null);
     try {
-      setGroups(await api.listAllGroups());
+      const disc = await fetchDiscovery().catch(() => ({ peers: [] as LanPeer[] }));
+      setPeers(disc.peers);
+      setGroups(await api.listAllGroupsFederated(identity.nodeId, disc.peers));
     } catch (e) {
       setError(e instanceof Error ? e.message : "加载失败");
     }
@@ -40,6 +44,7 @@ export default function DashboardPage() {
         control_mode: "proxy",
       });
       saveGroupAdminKey(created.group_id, created.pk_admin);
+      saveGroupControlPlaneUrl(created.group_id, api.getApiBaseUrl());
       setNewGroupName("");
       setNewGroupDesc("");
       await refresh();
@@ -106,7 +111,7 @@ export default function DashboardPage() {
       <section className="app-panel">
         <h2>我的群组</h2>
         {groups.length === 0 ? (
-          <p className="app-muted">暂无群组</p>
+          <p className="app-muted">{peers.length ? "暂无群组" : "暂无群组（未发现邻居）"}</p>
         ) : (
           <div className="group-card-grid">
             {groups.map((g) => (

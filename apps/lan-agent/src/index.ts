@@ -8,21 +8,38 @@ import { pickLanAddress, resolveMdnsInterface } from "./network.js";
 
 async function main() {
   const port = Number(process.env.LAN_AGENT_PORT ?? 3003);
-  const uid = process.env.DPE_NODE_ID ?? `local-${os.hostname()}`;
+  const uid = process.env.DPE_NODE_ID?.trim() || `local-${os.hostname()}`;
   const displayName = process.env.DPE_AGENT_NAME ?? os.hostname();
   const host = pickLanAddress();
   const mdnsInterface = resolveMdnsInterface(host);
+  const agentHost = process.env.DPE_AGENT_HOST?.trim() || host;
+  const controlPlanePort = Number(process.env.CONTROL_PLANE_PORT ?? 3001);
+  const signalingPort = Number(process.env.SIGNALING_PORT ?? 3002);
+  const webPort = Number(process.env.WEB_PORT ?? process.env.VITE_PORT ?? 5173);
+  const agentUrl = process.env.DPE_AGENT_URL?.trim() || `http://${agentHost}:${port}`;
+  const controlUrl =
+    process.env.DPE_CONTROL_URL?.trim() || `http://${agentHost}:${controlPlanePort}`;
   const signalingUrl =
-    process.env.DPE_SIGNALING_URL ?? "ws://127.0.0.1:3002/ws";
+    process.env.DPE_SIGNALING_URL?.trim() || `ws://${agentHost}:${signalingPort}/ws`;
+  const webUrl = process.env.DPE_WEB_URL?.trim() || `http://${agentHost}:${webPort}`;
 
   const discovery = createDiscovery(
-    { uid, displayName, port, host: process.env.DPE_AGENT_HOST?.trim() || host },
+    {
+      uid,
+      displayName,
+      port,
+      host: agentHost,
+      agentUrl,
+      controlUrl,
+      signalingUrl,
+      webUrl,
+    },
     { mdnsInterface },
   );
   discovery.start();
 
   console.log(
-    `[lan-agent] listening 0.0.0.0:${port} node_id=${uid} agentHost=${process.env.DPE_AGENT_HOST?.trim() || host} mdnsInterface=${mdnsInterface ?? "all"}`,
+    `[lan-agent] listening 0.0.0.0:${port} node_id=${uid} agentHost=${agentHost} mdnsInterface=${mdnsInterface ?? "all"}`,
   );
   if (process.env.DPE_DISCOVERY_PROBE_HOSTS?.trim()) {
     console.log(`[lan-agent] probe hosts: ${process.env.DPE_DISCOVERY_PROBE_HOSTS}`);
@@ -56,9 +73,12 @@ async function main() {
     service: "lan-agent",
     status: "ok",
     node_id: uid,
-    agent_host: process.env.DPE_AGENT_HOST?.trim() || host,
+    agent_host: agentHost,
     mdns_interface: mdnsInterface ?? null,
+    agent_url: agentUrl,
+    control_url: controlUrl,
     signaling_url: signalingUrl,
+    web_url: webUrl,
     endpoints: {
       health: "/health",
       network: "/network",
@@ -68,6 +88,20 @@ async function main() {
       websocket: "/ws",
     },
     hint: "Set DPE_DISCOVERY_PROBE_HOSTS=ip,... when mDNS is one-way (VM NAT). DPE_MANUAL_PEERS=uid@host:port for static peers.",
+  }));
+
+  app.get("/manifest", async () => ({
+    uid,
+    node_id: uid,
+    display_name: displayName,
+    host: agentHost,
+    port,
+    agent_url: agentUrl,
+    control_url: controlUrl,
+    signaling_url: signalingUrl,
+    web_url: webUrl,
+    capabilities: ["control-plane", "signaling", "lan-discovery"],
+    updated_at: new Date().toISOString(),
   }));
 
   app.get("/health", async () => ({
@@ -81,9 +115,12 @@ async function main() {
     hostname: os.hostname(),
     node_id: uid,
     agentPort: port,
-    agentHost: process.env.DPE_AGENT_HOST?.trim() || host,
+    agentHost,
+    agentUrl,
+    controlUrl,
     mdnsInterface: mdnsInterface ?? null,
     signalingUrl,
+    webUrl,
     interfaces: Object.values(os.networkInterfaces())
       .flat()
       .filter((i): i is NonNullable<typeof i> => i != null)
@@ -115,12 +152,20 @@ async function main() {
       if (!uid || !host || !Number.isFinite(port)) {
         return reply.status(400).send({ error: "uid, host, port required" });
       }
-      discovery.registerManual({ uid, host, port: Number(port), name });
-      const peer = peers.find((p) => p.uid === uid) ?? {
+      const peerPort = Number(port);
+      const manualPeer = {
         uid,
         host,
-        port: Number(port),
+        port: peerPort,
         name,
+        agentUrl: `http://${host}:${peerPort}`,
+        controlUrl: `http://${host}:${controlPlanePort}`,
+        signalingUrl: `ws://${host}:${signalingPort}/ws`,
+        webUrl: `http://${host}:${webPort}`,
+      };
+      discovery.registerManual(manualPeer);
+      const peer = peers.find((p) => p.uid === uid) ?? {
+        ...manualPeer,
         source: "manual" as const,
         lastSeen: Date.now(),
       };

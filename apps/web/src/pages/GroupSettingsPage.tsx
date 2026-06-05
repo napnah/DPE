@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { CopyableField } from "../components/CopyableField";
 import { MemberRoleAssign } from "../components/MemberRoleAssign";
-import { api, type GovernancePayload } from "../lib/api";
+import { api, resolveGroupControlPlaneUrl, type GovernancePayload } from "../lib/api";
 import { stopGroupMesh } from "../lib/mesh-context";
 import { useIdentity } from "../lib/use-identity";
 import { memberDisplayLabel } from "../lib/display-names";
@@ -18,6 +18,10 @@ export default function GroupSettingsPage() {
   const nodeId = identity?.nodeId ?? "";
   const gid = groupId ?? "";
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const controlPlaneUrl = resolveGroupControlPlaneUrl(gid, searchParams.get("control"));
+  const controlQuery = controlPlaneUrl ? `?control=${encodeURIComponent(controlPlaneUrl)}` : "";
+  const groupPath = `/groups/${gid}${controlQuery}`;
 
   const [gov, setGov] = useState<GovernancePayload | null>(null);
   const [inviteUid, setInviteUid] = useState("");
@@ -32,7 +36,7 @@ export default function GroupSettingsPage() {
   const load = useCallback(async () => {
     if (!nodeId || !gid) return;
     try {
-      const data = await api.getGovernance(gid, nodeId);
+      const data = await api.getGovernance(gid, nodeId, controlPlaneUrl);
       setGov(data);
       const map: Record<string, string[]> = {};
       for (const m of data.members) {
@@ -43,7 +47,7 @@ export default function GroupSettingsPage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "非群主或无法加载群组设置");
     }
-  }, [nodeId, gid]);
+  }, [nodeId, gid, controlPlaneUrl]);
 
   useEffect(() => {
     void load();
@@ -53,10 +57,14 @@ export default function GroupSettingsPage() {
     if (!nodeId || !gov?.default_rules) return;
     setBusy(true);
     try {
-      await api.updateGovernance(gid, {
-        caller_node_id: nodeId,
-        default_member_role_id: gov.default_rules.default_member_role_id,
-      });
+      await api.updateGovernance(
+        gid,
+        {
+          caller_node_id: nodeId,
+          default_member_role_id: gov.default_rules.default_member_role_id,
+        },
+        controlPlaneUrl,
+      );
       setToast("默认规则已保存");
       await load();
     } catch (e) {
@@ -70,10 +78,14 @@ export default function GroupSettingsPage() {
     if (!nodeId || !newRoleName.trim()) return;
     setBusy(true);
     try {
-      await api.updateGovernance(gid, {
-        caller_node_id: nodeId,
-        create_roles: [{ name: newRoleName.trim(), color: newRoleColor }],
-      });
+      await api.updateGovernance(
+        gid,
+        {
+          caller_node_id: nodeId,
+          create_roles: [{ name: newRoleName.trim(), color: newRoleColor }],
+        },
+        controlPlaneUrl,
+      );
       setNewRoleName("");
       setToast("角色已创建");
       await load();
@@ -95,10 +107,14 @@ export default function GroupSettingsPage() {
     }
     setBusy(true);
     try {
-      await api.updateGovernance(gid, {
-        caller_node_id: nodeId,
-        delete_role_ids: [roleId],
-      });
+      await api.updateGovernance(
+        gid,
+        {
+          caller_node_id: nodeId,
+          delete_role_ids: [roleId],
+        },
+        controlPlaneUrl,
+      );
       setToast(`已删除角色「${roleName}」`);
       await load();
     } catch (e) {
@@ -115,10 +131,14 @@ export default function GroupSettingsPage() {
     setSavingMemberId(memberNodeId);
     setError(null);
     try {
-      await api.updateGovernance(gid, {
-        caller_node_id: nodeId,
-        member_roles: [{ node_id: memberNodeId, role_ids: roleIds }],
-      });
+      await api.updateGovernance(
+        gid,
+        {
+          caller_node_id: nodeId,
+          member_roles: [{ node_id: memberNodeId, role_ids: roleIds }],
+        },
+        controlPlaneUrl,
+      );
     } catch (e) {
       setMemberRoles((prev) => ({ ...prev, [memberNodeId]: previous }));
       setError(e instanceof Error ? e.message : "保存失败");
@@ -135,7 +155,7 @@ export default function GroupSettingsPage() {
     }
     setBusy(true);
     try {
-      await api.dissolveGroup(gid, nodeId);
+      await api.dissolveGroup(gid, nodeId, controlPlaneUrl);
       localStorage.removeItem(`dpe_group_${gid}_pk_admin`);
       await stopGroupMesh();
       navigate("/dashboard", { replace: true });
@@ -150,7 +170,7 @@ export default function GroupSettingsPage() {
     if (!nodeId || !inviteUid.trim()) return;
     setBusy(true);
     try {
-      await api.createInvitation(gid, nodeId, inviteUid.trim());
+      await api.createInvitation(gid, nodeId, inviteUid.trim(), controlPlaneUrl);
       setInviteUid("");
       setToast("邀请已发送");
     } catch (e) {
@@ -175,7 +195,7 @@ export default function GroupSettingsPage() {
           <p className="app-breadcrumb">
             <Link to="/dashboard">总览</Link>
             <span> / </span>
-            <Link to={`/groups/${gid}`}>{gov?.name ?? "群组"}</Link>
+            <Link to={groupPath}>{gov?.name ?? "群组"}</Link>
             <span> / 群组设置</span>
           </p>
           <h1>群组设置</h1>

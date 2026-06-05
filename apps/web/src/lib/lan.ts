@@ -5,6 +5,10 @@ export type LanPeer = {
   host: string;
   port: number;
   name?: string;
+  agentUrl: string;
+  controlUrl: string;
+  signalingUrl: string;
+  webUrl: string;
   source: string;
   lastSeen: number;
 };

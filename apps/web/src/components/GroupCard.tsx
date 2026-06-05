@@ -7,6 +7,7 @@ export type GroupCardData = {
   my_role_name: string;
   my_role_color: string;
   is_owner: boolean;
+  control_plane_url?: string;
 };
 
 /** Breeze-style soft surfaces (no heavy dark tiles). */
@@ -41,8 +42,14 @@ export function GroupCard({
       }
     : { background: group.my_role_color, color: "#fff" };
 
+  const target =
+    to ??
+    (group.control_plane_url
+      ? `/groups/${group.group_id}?control=${encodeURIComponent(group.control_plane_url)}`
+      : `/groups/${group.group_id}`);
+
   return (
-    <Link to={to ?? `/groups/${group.group_id}`} className="group-card">
+    <Link to={target} className="group-card">
       <div className="group-card__visual" style={{ background: gradient }}>
         <span
           className="group-card__badge"

@@ -4,7 +4,15 @@ import { isFolderDoc, randomUuid } from "@dpe/shared";
 import { DocTreeNav, ROOT_DOC_ID } from "../components/DocTreeNav";
 import { DocInlineEditor } from "../components/DocInlineEditor";
 import { DocNodePermissionsPanel } from "../components/DocNodePermissionsPanel";
-import { ApiError, api, loadGroupAdminKey, type DocNodeRow } from "../lib/api";
+import {
+  ApiError,
+  api,
+  loadGroupAdminKey,
+  loadGroupControlPlaneUrl,
+  resolveGroupControlPlaneUrl,
+  saveGroupControlPlaneUrl,
+  type DocNodeRow,
+} from "../lib/api";
 import { useIdentity } from "../lib/use-identity";
 import { startGroupMesh, stopGroupMesh } from "../lib/mesh-context";
 import {
@@ -15,6 +23,7 @@ import {
 } from "../lib/realtime-debug";
 import { RealtimeTracePanel } from "../components/RealtimeTracePanel";
 import { clearRealtimeTrace, setRealtimeTraceContext } from "../lib/realtime-trace";
+import { fetchDiscovery, type LanPeer } from "../lib/lan";
 
 function isFolder(n: DocNodeRow) {
   return isFolderDoc(n);
@@ -48,6 +57,10 @@ export default function GroupPage() {
   const [groupName, setGroupName] = useState("群组");
   const [isOwner, setIsOwner] = useState(false);
   const [adminPublicKey, setAdminPublicKey] = useState<string | null>(null);
+  const [controlPlaneUrl, setControlPlaneUrl] = useState<string | undefined>(() =>
+    resolveGroupControlPlaneUrl(gid, searchParams.get("control")),
+  );
+  const [peers, setPeers] = useState<LanPeer[]>([]);
   const [p2pStatus, setP2pStatus] = useState("未连接");
   const [error, setError] = useState<string | null>(null);
   const [debug, setDebug] = useState<RealtimeDebugSnapshot>(() => getRealtimeDebugSnapshot());
@@ -60,6 +73,7 @@ export default function GroupPage() {
   const selectedNode = nodes.find((n) => n.docId === selectedId);
   const selectedIsFolder = selectedNode ? isFolder(selectedNode) : true;
   const syncDocId = selectedIsFolder ? ROOT_DOC_ID : selectedId;
+  const controlQuery = controlPlaneUrl ? `?control=${encodeURIComponent(controlPlaneUrl)}` : "";
   useEffect(() => {
     setRealtimeTraceContext({
       groupId: gid,
@@ -75,14 +89,19 @@ export default function GroupPage() {
   useEffect(() => {
     const doc = searchParams.get("doc");
     if (doc) setSelectedId(doc);
-  }, [searchParams]);
+    const resolved = resolveGroupControlPlaneUrl(gid, searchParams.get("control"));
+    setControlPlaneUrl(resolved);
+  }, [searchParams, gid]);
 
   const selectNode = useCallback(
     (docId: string) => {
       setSelectedId(docId);
-      setSearchParams(docId === ROOT_DOC_ID ? {} : { doc: docId }, { replace: true });
+      const next: Record<string, string> = {};
+      if (docId !== ROOT_DOC_ID) next.doc = docId;
+      if (controlPlaneUrl) next.control = controlPlaneUrl;
+      setSearchParams(next, { replace: true });
     },
-    [setSearchParams],
+    [controlPlaneUrl, setSearchParams],
   );
 
   useEffect(() => {
@@ -95,15 +114,25 @@ export default function GroupPage() {
     let cancelled = false;
     void (async () => {
       try {
-        const myGroups = await api.listAllGroups(nodeId);
+        const disc = await fetchDiscovery().catch(() => ({ peers: [] as LanPeer[] }));
         if (cancelled) return;
-        const card = myGroups.find((g) => g.group_id === gid);
+        setPeers(disc.peers);
+        const myGroups = await api.listAllGroupsFederated(nodeId, disc.peers);
+        if (cancelled) return;
+        const card = myGroups.find(
+          (g) => g.group_id === gid && (!controlPlaneUrl || g.control_plane_url === controlPlaneUrl),
+        ) ?? myGroups.find((g) => g.group_id === gid);
         setIsOwner(card?.is_owner ?? false);
+        const cp = card?.control_plane_url ?? controlPlaneUrl ?? loadGroupControlPlaneUrl(gid);
         if (card) {
           setGroupName(card.name);
           setAdminPublicKey(card.issuer_public_key ?? loadGroupAdminKey(gid));
+          if (cp) {
+            setControlPlaneUrl(cp);
+            saveGroupControlPlaneUrl(gid, cp);
+          }
         }
-        const tree = await api.getTree(gid, nodeId);
+        const tree = await api.getTree(gid, nodeId, cp);
         if (cancelled) return;
         setNodes(tree.nodes);
       } catch (e) {
@@ -115,11 +144,13 @@ export default function GroupPage() {
     return () => {
       cancelled = true;
     };
-  }, [gid, nodeId]);
+  }, [gid, nodeId, controlPlaneUrl]);
 
   useEffect(() => {
     if (!nodeId || !gid) return;
 
+    const cp =
+      controlPlaneUrl ?? loadGroupControlPlaneUrl(gid) ?? undefined;
     const pkAdmin = adminPublicKey ?? loadGroupAdminKey(gid);
     if (!pkAdmin) {
       setP2pStatus("未连接");
@@ -137,7 +168,7 @@ export default function GroupPage() {
       setError(null);
 
       try {
-        const mem = await api.listMembers(gid);
+        const mem = await api.listMembers(gid, cp);
         if (ac.signal.aborted || gen !== meshGen) return;
 
         const memberMap = new Map<string, string>();
@@ -148,8 +179,9 @@ export default function GroupPage() {
           nodeId,
           adminPublicKeyBase64Url: pkAdmin,
           memberPublicKeys: memberMap,
+          signalingUrls: peers.map((p) => p.signalingUrl).filter(Boolean),
           getJwt: async () => {
-            const r = await api.refreshJwt(gid, nodeId, syncDocId);
+            const r = await api.refreshJwt(gid, nodeId, syncDocId, cp);
             return r.jwt;
           },
         });
@@ -168,11 +200,11 @@ export default function GroupPage() {
       ac.abort();
       void stopGroupMesh();
     };
-  }, [gid, nodeId, adminPublicKey, meshGen, syncDocId]);
+  }, [gid, nodeId, adminPublicKey, controlPlaneUrl, peers, meshGen, syncDocId]);
 
   async function refreshTree() {
     if (!nodeId) return;
-    const tree = await api.getTree(gid, nodeId);
+    const tree = await api.getTree(gid, nodeId, controlPlaneUrl);
     setNodes(tree.nodes);
   }
 
@@ -190,7 +222,7 @@ export default function GroupPage() {
       return;
     }
     try {
-      await api.renameDoc(gid, nodeId, selectedId, title);
+      await api.renameDoc(gid, nodeId, selectedId, title, controlPlaneUrl);
       await refreshTree();
       setError(null);
     } catch (e) {
@@ -206,7 +238,7 @@ export default function GroupPage() {
       : "删除后无法恢复。";
     if (!window.confirm(`确定删除「${label}」？${hint}`)) return;
     try {
-      await api.deleteDoc(gid, nodeId, selectedId);
+      await api.deleteDoc(gid, nodeId, selectedId, controlPlaneUrl);
       localStorage.removeItem(`dpe_doc_${gid}_${selectedId}`);
       const parentId = selectedNode?.parentDocId ?? ROOT_DOC_ID;
       await refreshTree();
@@ -226,12 +258,17 @@ export default function GroupPage() {
     if (!parent || !isFolder(parent)) return;
     const doc_id = randomUuid();
     try {
-      await api.createChild(gid, nodeId, {
-        parent_doc_id: parentId,
-        doc_id,
-        title: newItemTitle.trim() || (is_folder ? "未命名目录" : "未命名文档"),
-        is_folder,
-      });
+      await api.createChild(
+        gid,
+        nodeId,
+        {
+          parent_doc_id: parentId,
+          doc_id,
+          title: newItemTitle.trim() || (is_folder ? "未命名目录" : "未命名文档"),
+          is_folder,
+        },
+        controlPlaneUrl,
+      );
       await refreshTree();
       setNewItemTitle("");
       if (!is_folder) selectNode(doc_id);
@@ -276,7 +313,7 @@ export default function GroupPage() {
             {isOwner && (
               <>
                 {" "}
-                · <Link to={`/groups/${gid}/settings`}>群组设置</Link>
+                · <Link to={`/groups/${gid}/settings${controlQuery}`}>群组设置</Link>
               </>
             )}
           </p>
@@ -365,11 +402,21 @@ export default function GroupPage() {
               <p className="app-muted">选择左侧文档进入协作编辑，或在当前目录下新建条目。</p>
             </div>
           ) : (
-            <DocInlineEditor key={selectedId} groupId={gid} docId={selectedId} />
+            <DocInlineEditor
+              key={selectedId}
+              groupId={gid}
+              docId={selectedId}
+              controlPlaneUrl={controlPlaneUrl}
+            />
           )}
         </section>
 
-        <DocNodePermissionsPanel groupId={gid} node={selectedNode} isOwner={isOwner} />
+        <DocNodePermissionsPanel
+          groupId={gid}
+          node={selectedNode}
+          isOwner={isOwner}
+          controlPlaneUrl={controlPlaneUrl}
+        />
       </div>
     </main>
   );

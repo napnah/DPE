@@ -1222,9 +1222,11 @@ function BlockTableEditor({
 export function DocInlineEditor({
   groupId,
   docId,
+  controlPlaneUrl,
 }: {
   groupId: string;
   docId: string;
+  controlPlaneUrl?: string;
 }) {
   const identity = useIdentity();
   const nodeId = identity?.nodeId ?? "";
@@ -1273,7 +1275,7 @@ export function DocInlineEditor({
         const sk = loadPrivateKey();
         if (!sk) throw new Error("缺少私钥");
 
-        const session = await api.refreshJwt(groupId, nodeId, docId);
+        const session = await api.refreshJwt(groupId, nodeId, docId, controlPlaneUrl);
         if (cancelled) return;
 
         const payload = parseJwtPayload(session.jwt);
@@ -1291,7 +1293,7 @@ export function DocInlineEditor({
 
         let loadedRemoteSnapshot = false;
         try {
-          const remote = await api.getDocSnapshot(groupId, docId, nodeId);
+          const remote = await api.getDocSnapshot(groupId, docId, nodeId, controlPlaneUrl);
           if (!cancelled && remote.snapshot?.state_update_base64) {
             applyPersistedDocState(
               doc,
@@ -1363,7 +1365,7 @@ export function DocInlineEditor({
               .putDocSnapshot(groupId, docId, {
                 node_id: nodeId,
                 state_update_base64: docStateToBase64Url(state),
-              })
+              }, controlPlaneUrl)
               .catch(() => {
                 /* keep local draft if server unavailable */
               });
@@ -1424,7 +1426,7 @@ export function DocInlineEditor({
         engineRef.current = null;
       }
     };
-  }, [nodeId, publicKeyBase64Url, groupId, docId]);
+  }, [nodeId, publicKeyBase64Url, groupId, docId, controlPlaneUrl]);
 
   const readonly = !engine?.writable;
   const loading = !engine || status.startsWith("加载") || status.startsWith("无法");

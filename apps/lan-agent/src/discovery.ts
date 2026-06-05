@@ -8,6 +8,10 @@ export type LanPeer = {
   host: string;
   port: number;
   name?: string;
+  agentUrl: string;
+  controlUrl: string;
+  signalingUrl: string;
+  webUrl: string;
   source: "mdns" | "manual" | "probe";
   lastSeen: number;
 };
@@ -27,7 +31,41 @@ export type LocalAgentIdentity = {
   displayName: string;
   port: number;
   host: string;
+  agentUrl: string;
+  controlUrl: string;
+  signalingUrl: string;
+  webUrl: string;
 };
+
+function peerFromParts(peer: {
+  uid: string;
+  host: string;
+  port: number;
+  name?: string;
+  agentUrl?: string;
+  controlUrl?: string;
+  signalingUrl?: string;
+  webUrl?: string;
+  source: LanPeer["source"];
+  lastSeen: number;
+}): LanPeer {
+  return {
+    ...peer,
+    agentUrl: peer.agentUrl ?? `http://${peer.host}:${peer.port}`,
+    controlUrl: peer.controlUrl ?? `http://${peer.host}:3001`,
+    signalingUrl: peer.signalingUrl ?? `ws://${peer.host}:3002/ws`,
+    webUrl: peer.webUrl ?? `http://${peer.host}:5173`,
+  };
+}
+
+function txtString(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    const first = value.find((item) => typeof item === "string");
+    return typeof first === "string" ? first : undefined;
+  }
+  return undefined;
+}
 
 function parseManualPeers(raw: string | undefined): LanPeer[] {
   if (!raw?.trim()) return [];
@@ -51,7 +89,7 @@ function parseManualPeers(raw: string | undefined): LanPeer[] {
     const host = hostPort.slice(0, colon);
     const port = Number(hostPort.slice(colon + 1));
     if (!host || !Number.isFinite(port)) continue;
-    out.push({ uid, host, port, source: "manual", lastSeen: now });
+    out.push(peerFromParts({ uid, host, port, source: "manual", lastSeen: now }));
   }
   return out;
 }
@@ -103,7 +141,7 @@ export function createDiscovery(
     if (probeHosts.length === 0) return;
     const found = await probeLanAgents(probeHosts, identity.port, identity.uid);
     for (const p of found) {
-      upsert({ ...p, source: "probe", lastSeen: Date.now() });
+      upsert(peerFromParts({ ...p, source: "probe", lastSeen: Date.now() }));
     }
   };
 
@@ -114,7 +152,14 @@ export function createDiscovery(
       name: identity.displayName,
       type: DPE_MDNS_SERVICE_TYPE,
       port: identity.port,
-      txt: { uid: identity.uid, host: identity.host },
+      txt: {
+        uid: identity.uid,
+        host: identity.host,
+        agent_url: identity.agentUrl,
+        control_url: identity.controlUrl,
+        signaling_url: identity.signalingUrl,
+        web_url: identity.webUrl,
+      },
     });
   };
 
@@ -131,25 +176,31 @@ export function createDiscovery(
           publishMdns();
           browser = bonjour.find({ type: DPE_MDNS_SERVICE_TYPE });
           browser.on("up", (svc: Service) => {
-            const uid = svc.txt?.uid ?? svc.name;
+            const uid = txtString(svc.txt?.uid) ?? svc.name;
             if (!uid || uid === identity.uid) return;
             const host =
               (svc.referer?.address as string | undefined) ??
-              svc.txt?.host ??
+              txtString(svc.txt?.host) ??
               svc.host ??
               svc.addresses?.[0];
             if (!host) return;
-            upsert({
-              uid,
-              host,
-              port: svc.port,
-              name: svc.name,
-              source: "mdns",
-              lastSeen: Date.now(),
-            });
+            upsert(
+              peerFromParts({
+                uid,
+                host,
+                port: svc.port,
+                name: svc.name,
+                agentUrl: txtString(svc.txt?.agent_url),
+                controlUrl: txtString(svc.txt?.control_url),
+                signalingUrl: txtString(svc.txt?.signaling_url),
+                webUrl: txtString(svc.txt?.web_url),
+                source: "mdns",
+                lastSeen: Date.now(),
+              }),
+            );
           });
           browser.on("down", (svc: Service) => {
-            const uid = svc.txt?.uid ?? svc.name;
+            const uid = txtString(svc.txt?.uid) ?? svc.name;
             if (!uid) return;
             const key = uid.toLowerCase();
             const existing = byUid.get(key);
@@ -183,11 +234,11 @@ export function createDiscovery(
     getPeers: () => [...byUid.values()],
     registerManual(peer) {
       upsert(
-        {
+        peerFromParts({
           ...peer,
           source: "manual",
           lastSeen: Date.now(),
-        },
+        }),
         "manual",
       );
     },

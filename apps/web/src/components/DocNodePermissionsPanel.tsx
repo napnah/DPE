@@ -9,10 +9,12 @@ export function DocNodePermissionsPanel({
   groupId,
   node,
   isOwner,
+  controlPlaneUrl,
 }: {
   groupId: string;
   node: DocNodeRow | undefined;
   isOwner: boolean;
+  controlPlaneUrl?: string;
 }) {
   const nodeId = useIdentity()?.nodeId ?? "";
   const [docAcls, setDocAcls] = useState<DocRoleAclRow | null>(null);
@@ -22,6 +24,7 @@ export function DocNodePermissionsPanel({
   const docId = node?.docId;
   const isFolder = node ? isFolderDoc(node) : true;
   const visibleAcls = docAcls?.doc_id === docId ? docAcls : null;
+  const controlQuery = controlPlaneUrl ? `?control=${encodeURIComponent(controlPlaneUrl)}` : "";
 
   useEffect(() => {
     if (!nodeId || !docId) {
@@ -36,7 +39,7 @@ export function DocNodePermissionsPanel({
     setError(null);
 
     void api
-      .getDocRoleAcls(groupId, docId, nodeId)
+      .getDocRoleAcls(groupId, docId, nodeId, controlPlaneUrl)
       .then((data) => {
         if (cancelled) return;
         setDocAcls(data);
@@ -60,17 +63,22 @@ export function DocNodePermissionsPanel({
     return () => {
       cancelled = true;
     };
-  }, [groupId, docId, nodeId]);
+  }, [groupId, docId, nodeId, controlPlaneUrl]);
 
   async function setDocRoleAcl(roleId: string, level: number) {
     if (!nodeId || !docId || !visibleAcls?.can_manage_acl) return;
     try {
-      await api.setDocRoleAcl(groupId, nodeId, {
-        doc_id: docId,
-        group_role_id: roleId,
-        access_level: level,
-      });
-      setDocAcls(await api.getDocRoleAcls(groupId, docId, nodeId));
+      await api.setDocRoleAcl(
+        groupId,
+        nodeId,
+        {
+          doc_id: docId,
+          group_role_id: roleId,
+          access_level: level,
+        },
+        controlPlaneUrl,
+      );
+      setDocAcls(await api.getDocRoleAcls(groupId, docId, nodeId, controlPlaneUrl));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "保存失败");
@@ -99,7 +107,7 @@ export function DocNodePermissionsPanel({
 
       {isOwner && (
         <p className="app-muted">
-          <Link to={`/groups/${groupId}/settings`}>群组设置</Link>
+          <Link to={`/groups/${groupId}/settings${controlQuery}`}>群组设置</Link>
         </p>
       )}
 

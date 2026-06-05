@@ -16,10 +16,14 @@ import {
 } from "./realtime-debug";
 import { traceRealtime } from "./realtime-trace.js";
 
-function signalingUrl(): string {
-  const raw = import.meta.env.VITE_SIGNALING_URL ?? "ws://localhost:3002/ws";
+function normalizeSignalingUrl(raw: string): string {
   const trimmed = raw.trim().replace(/\/$/, "");
   return trimmed.endsWith("/ws") ? trimmed : `${trimmed}/ws`;
+}
+
+function defaultSignalingUrl(): string {
+  const raw = import.meta.env.VITE_SIGNALING_URL ?? "ws://localhost:3002/ws";
+  return normalizeSignalingUrl(raw);
 }
 
 /** Decode the JWT (without verifying signature) to suggest the most likely failure cause. */
@@ -41,11 +45,12 @@ export type MeshConfig = {
   nodeId: string;
   adminPublicKeyBase64Url: string;
   memberPublicKeys: Map<string, string>;
+  signalingUrls?: string[];
   getJwt: () => Promise<string>;
 };
 
 export class GroupP2pMesh {
-  private ws: WebSocket | null = null;
+  private readonly sockets = new Map<string, WebSocket>();
   private readonly pcs = new Map<string, RTCPeerConnection>();
   private readonly channels = new Map<string, RTCDataChannel>();
   private readonly providers = new Set<SecureYjsProvider>();
@@ -55,10 +60,11 @@ export class GroupP2pMesh {
   private readonly connecting = new Set<string>();
   private readonly lastAlive = new Map<string, number>();
   private readonly currentRoomPeers = new Set<string>();
+  private readonly roomPeersBySignal = new Map<string, Set<string>>();
   private lastPeersInRoom = 0;
   private healthTimer: ReturnType<typeof setInterval> | null = null;
-  private wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private wsReconnectAttempts = 0;
+  private readonly wsReconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly wsReconnectAttempts = new Map<string, number>();
   private stopped = false;
   private static readonly HEALTH_INTERVAL_MS = 5_000;
   private static readonly WS_RECONNECT_MAX_MS = 30_000;
@@ -86,6 +92,28 @@ export class GroupP2pMesh {
   }
 
   constructor(private readonly config: MeshConfig) {}
+
+  private signalingUrls(): string[] {
+    const urls = new Set<string>([defaultSignalingUrl()]);
+    for (const url of this.config.signalingUrls ?? []) {
+      if (url.trim()) urls.add(normalizeSignalingUrl(url));
+    }
+    return [...urls];
+  }
+
+  private hasOpenSignaling(): boolean {
+    for (const socket of this.sockets.values()) {
+      if (socket.readyState === WebSocket.OPEN) return true;
+    }
+    return false;
+  }
+
+  private rebuildCurrentRoomPeers(): void {
+    this.currentRoomPeers.clear();
+    for (const peers of this.roomPeersBySignal.values()) {
+      for (const peer of peers) this.currentRoomPeers.add(peer);
+    }
+  }
 
   /** Lower node_id always initiates the WebRTC offer for a pair. */
   private shouldInitiate(peerId: string): boolean {
@@ -141,7 +169,7 @@ export class GroupP2pMesh {
     }
 
     // 3. Reconcile against signaling's latest peer list.
-    if (this.ws?.readyState === WebSocket.OPEN) {
+    if (this.hasOpenSignaling()) {
       for (const peerId of this.currentRoomPeers) {
         if (peerId === this.config.nodeId) continue;
         if (this.hasOpenChannel(peerId) || this.connecting.has(peerId)) continue;
@@ -240,12 +268,20 @@ export class GroupP2pMesh {
 
   async start(): Promise<void> {
     this.stopped = false;
-    await this.openSignalingSocket(true);
+    const results = await Promise.allSettled(
+      this.signalingUrls().map((url) => this.openSignalingSocket(url, true)),
+    );
+    if (!results.some((r) => r.status === "fulfilled")) {
+      const first = results[0];
+      throw first?.status === "rejected" && first.reason instanceof Error
+        ? first.reason
+        : new Error("无法连接任何信令服务");
+    }
     this.startHealthLoop();
   }
 
-  private sendJoin(): void {
-    this.ws?.send(
+  private sendJoin(socket: WebSocket): void {
+    socket.send(
       JSON.stringify({
         type: "join",
         room: this.config.groupId,
@@ -254,27 +290,32 @@ export class GroupP2pMesh {
     );
   }
 
-  private scheduleSignalingReconnect(): void {
-    if (this.stopped || this.wsReconnectTimer) return;
+  private scheduleSignalingReconnect(url: string): void {
+    if (this.stopped || this.wsReconnectTimers.has(url)) return;
+    const attempts = this.wsReconnectAttempts.get(url) ?? 0;
     const delay = Math.min(
-      1000 * 2 ** this.wsReconnectAttempts,
+      1000 * 2 ** attempts,
       GroupP2pMesh.WS_RECONNECT_MAX_MS,
     );
-    this.wsReconnectAttempts += 1;
-    traceRealtime("signal", "ws_reconnect_scheduled", { delayMs: delay }, "warn");
-    this.wsReconnectTimer = setTimeout(() => {
-      this.wsReconnectTimer = null;
+    this.wsReconnectAttempts.set(url, attempts + 1);
+    traceRealtime("signal", "ws_reconnect_scheduled", { url, delayMs: delay }, "warn");
+    const timer = setTimeout(() => {
+      this.wsReconnectTimers.delete(url);
       if (this.stopped) return;
-      void this.openSignalingSocket(false).catch(() => {
-        this.scheduleSignalingReconnect();
+      void this.openSignalingSocket(url, false).catch(() => {
+        this.scheduleSignalingReconnect(url);
       });
     }, delay);
+    this.wsReconnectTimers.set(url, timer);
   }
 
-  private async openSignalingSocket(isInitial: boolean): Promise<void> {
-    const url = signalingUrl();
+  private async openSignalingSocket(url: string, isInitial: boolean): Promise<void> {
+    const existing = this.sockets.get(url);
+    if (existing?.readyState === WebSocket.OPEN || existing?.readyState === WebSocket.CONNECTING) {
+      return;
+    }
     const ws = new WebSocket(url);
-    this.ws = ws;
+    this.sockets.set(url, ws);
 
     await new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -295,7 +336,7 @@ export class GroupP2pMesh {
 
       ws.onopen = () => {
         window.clearTimeout(timeout);
-        this.wsReconnectAttempts = 0;
+        this.wsReconnectAttempts.set(url, 0);
         traceRealtime("signal", "ws_open", { url, initial: isInitial }, "info");
         ok();
       };
@@ -315,28 +356,31 @@ export class GroupP2pMesh {
       };
     });
 
-    ws.onmessage = (ev) => void this.onSignalMessage(String(ev.data));
+    ws.onmessage = (ev) => void this.onSignalMessage(String(ev.data), url);
     ws.onclose = () => {
       traceRealtime("signal", "ws_closed", { url }, "warn");
-      this.ws = null;
-      if (!this.stopped) this.scheduleSignalingReconnect();
+      if (this.sockets.get(url) === ws) this.sockets.delete(url);
+      this.roomPeersBySignal.delete(url);
+      this.rebuildCurrentRoomPeers();
+      if (!this.stopped) this.scheduleSignalingReconnect(url);
     };
     ws.onerror = () => {
       traceRealtime("signal", "ws_error", { url }, "warn");
     };
 
-    this.sendJoin();
+    this.sendJoin(ws);
   }
 
   stop(): void {
     this.stopped = true;
-    if (this.wsReconnectTimer) {
-      clearTimeout(this.wsReconnectTimer);
-      this.wsReconnectTimer = null;
+    for (const timer of this.wsReconnectTimers.values()) {
+      clearTimeout(timer);
     }
+    this.wsReconnectTimers.clear();
     if (this.healthTimer) clearInterval(this.healthTimer);
     this.healthTimer = null;
-    this.ws?.close();
+    for (const socket of this.sockets.values()) socket.close();
+    this.sockets.clear();
     for (const t of this.reconnectTimers.values()) clearTimeout(t);
     this.reconnectTimers.clear();
     for (const pc of this.pcs.values()) pc.close();
@@ -348,6 +392,7 @@ export class GroupP2pMesh {
     this.pendingCandidates.clear();
     this.connecting.clear();
     this.currentRoomPeers.clear();
+    this.roomPeersBySignal.clear();
     this.emitPeerStats(0);
   }
 
@@ -428,7 +473,7 @@ export class GroupP2pMesh {
     }
   }
 
-  private async onSignalMessage(raw: string): Promise<void> {
+  private async onSignalMessage(raw: string, url: string): Promise<void> {
     const msg = JSON.parse(raw) as {
       type: string;
       peers?: string[];
@@ -436,14 +481,15 @@ export class GroupP2pMesh {
     };
 
     if (msg.type === "peers" && msg.peers) {
-      this.currentRoomPeers.clear();
-      for (const p of msg.peers) this.currentRoomPeers.add(p);
+      this.roomPeersBySignal.set(url, new Set(msg.peers));
+      this.rebuildCurrentRoomPeers();
       traceRealtime("signal", "room_peers", {
+        url,
         count: msg.peers.length,
         peers: msg.peers.map((p) => p.slice(0, 8)),
       });
-      this.emitPeerStats(Math.max(0, msg.peers.length - 1));
-      for (const peerId of msg.peers) {
+      this.emitPeerStats(Math.max(0, this.currentRoomPeers.size - 1));
+      for (const peerId of this.currentRoomPeers) {
         if (peerId === this.config.nodeId) continue;
         if (this.hasOpenChannel(peerId) || this.connecting.has(peerId)) continue;
         if (this.pcs.has(peerId)) this.cleanupPeer(peerId);
@@ -522,14 +568,15 @@ export class GroupP2pMesh {
   }
 
   private sendSignal(to: string, payload: Record<string, unknown>): void {
-    this.ws?.send(
-      JSON.stringify({
-        type: "signal",
-        room: this.config.groupId,
-        to,
-        payload,
-      }),
-    );
+    const message = JSON.stringify({
+      type: "signal",
+      room: this.config.groupId,
+      to,
+      payload,
+    });
+    for (const socket of this.sockets.values()) {
+      if (socket.readyState === WebSocket.OPEN) socket.send(message);
+    }
   }
 
   private async connectPeer(peerId: string, initiator = this.shouldInitiate(peerId)): Promise<void> {
@@ -571,7 +618,7 @@ export class GroupP2pMesh {
 
         if (st === "failed" || st === "closed") {
           this.cleanupPeer(peerId);
-          if (this.ws?.readyState === WebSocket.OPEN && this.shouldInitiate(peerId)) {
+          if (this.hasOpenSignaling() && this.shouldInitiate(peerId)) {
             void this.connectPeer(peerId);
           }
           return;
@@ -584,7 +631,7 @@ export class GroupP2pMesh {
             const current = this.pcs.get(peerId);
             if (!current || current.connectionState !== "disconnected") return;
             this.cleanupPeer(peerId);
-            if (this.ws?.readyState === WebSocket.OPEN && this.shouldInitiate(peerId)) {
+            if (this.hasOpenSignaling() && this.shouldInitiate(peerId)) {
               void this.connectPeer(peerId);
             }
           }, 4000);
