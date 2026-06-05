@@ -18,8 +18,32 @@ type Client = {
   rooms: Set<string>;
 };
 
+type RelayEvent = {
+  at: string;
+  room: string;
+  from: string;
+  to?: string;
+  kind: string;
+  delivered: number;
+  members: string[];
+};
+
 export class SignalingRooms {
   private readonly rooms = new Map<string, Map<string, Client>>();
+  private readonly relayEvents: RelayEvent[] = [];
+
+  snapshot(): {
+    rooms: Array<{ room: string; members: string[] }>;
+    relayEvents: RelayEvent[];
+  } {
+    return {
+      rooms: [...this.rooms.entries()].map(([room, members]) => ({
+        room,
+        members: [...members.keys()],
+      })),
+      relayEvents: this.relayEvents.slice(-100),
+    };
+  }
 
   handleConnection(socket: WsLike): void {
     const client: Client = { socket, nodeId: "", rooms: new Set() };
@@ -82,7 +106,9 @@ export class SignalingRooms {
     client.rooms.delete(room);
     const members = this.rooms.get(room);
     if (!members) return;
-    if (client.nodeId) members.delete(client.nodeId);
+    if (client.nodeId && members.get(client.nodeId) === client) {
+      members.delete(client.nodeId);
+    }
     if (members.size === 0) this.rooms.delete(room);
   }
 
@@ -128,18 +154,55 @@ export class SignalingRooms {
       to,
       payload: { ...payload, from: client.nodeId },
     });
+    const kind = this.signalKind(payload);
+    let delivered = 0;
 
     if (to) {
       const target = members.get(to);
       if (target?.socket.readyState === WS_OPEN) {
         target.socket.send(msg);
+        delivered += 1;
       }
+      this.recordRelay(room, client.nodeId, to, kind, delivered, [...members.keys()]);
       return;
     }
 
     for (const [id, c] of members) {
       if (id === client.nodeId) continue;
-      if (c.socket.readyState === WS_OPEN) c.socket.send(msg);
+      if (c.socket.readyState === WS_OPEN) {
+        c.socket.send(msg);
+        delivered += 1;
+      }
     }
+    this.recordRelay(room, client.nodeId, undefined, kind, delivered, [...members.keys()]);
+  }
+
+  private signalKind(payload: Record<string, unknown>): string {
+    const signal = payload.signal;
+    if (!signal || typeof signal !== "object") return "unknown";
+    const data = signal as Record<string, unknown>;
+    if (typeof data.type === "string") return data.type;
+    if ("candidate" in data) return "candidate";
+    return "unknown";
+  }
+
+  private recordRelay(
+    room: string,
+    from: string,
+    to: string | undefined,
+    kind: string,
+    delivered: number,
+    members: string[],
+  ): void {
+    this.relayEvents.push({
+      at: new Date().toISOString(),
+      room,
+      from,
+      to,
+      kind,
+      delivered,
+      members,
+    });
+    if (this.relayEvents.length > 200) this.relayEvents.splice(0, this.relayEvents.length - 200);
   }
 }

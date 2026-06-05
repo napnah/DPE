@@ -5,6 +5,7 @@ import websocket from "@fastify/websocket";
 import { createDiscovery, type LanPeer } from "./discovery.js";
 import { registerCors } from "./cors.js";
 import { pickLanAddress, resolveMdnsInterface } from "./network.js";
+import { startStunServer } from "./stun-server.js";
 
 async function main() {
   const port = Number(process.env.LAN_AGENT_PORT ?? 3003);
@@ -198,6 +199,11 @@ async function main() {
   });
 
   await app.listen({ port, host: "0.0.0.0" });
+
+  const stunPort = Number(process.env.DPE_STUN_PORT ?? process.env.STUN_PORT ?? 3478);
+  if (stunPort > 0) {
+    startStunServer(stunPort);
+  }
 }
 
 main().catch((e) => {

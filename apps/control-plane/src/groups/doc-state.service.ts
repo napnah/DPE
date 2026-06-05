@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ForbiddenException,
+  Inject,
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
@@ -14,7 +15,9 @@ export class DocStateService {
   private static readonly MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024;
 
   constructor(
+    @Inject(PrismaService)
     private readonly prisma: PrismaService,
+    @Inject(SnapshotCacheService)
     private readonly cache: SnapshotCacheService,
   ) {}
 

@@ -17,13 +17,15 @@
     "@dpe/shared": "workspace:*",
     "@dpe/yjs-provider": "workspace:*",
     "react": "^19.0.0",
-    "yjs": "^13.6.20",
     "react-dom": "^19.0.0",
-    "react-router-dom": "^7.1.1"
+    "react-router-dom": "^7.1.1",
+    "simple-peer": "^9.11.1",
+    "yjs": "^13.6.20"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@types/simple-peer": "^9.11.9",
     "@vitejs/plugin-react": "^4.3.4",
     "typescript": "^5.7.2",
     "vite": "^6.0.6"

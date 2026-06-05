@@ -1,3 +1,4 @@
+import SimplePeer, { type SimplePeerPeer } from "../vendor/simplepeer";
 import {
   AuthHandshakeError,
   serializeAuthEnvelope,
@@ -16,6 +17,19 @@ import {
 } from "./realtime-debug";
 import { traceRealtime } from "./realtime-trace.js";
 
+type SimplePeerSignal = Record<string, unknown>;
+type SimplePeerInstance = SimplePeerPeer;
+type SimplePeerSignalInput = Exclude<Parameters<SimplePeerInstance["signal"]>[0], string>;
+type SimplePeerInternals = SimplePeerInstance & { _pc?: RTCPeerConnection };
+
+type PeerEntry = {
+  peer: SimplePeerInstance;
+  connected: boolean;
+  authSending: boolean;
+  answerTimer: ReturnType<typeof setTimeout> | null;
+  connectionId: string;
+};
+
 function normalizeSignalingUrl(raw: string): string {
   const trimmed = raw.trim().replace(/\/$/, "");
   return trimmed.endsWith("/ws") ? trimmed : `${trimmed}/ws`;
@@ -24,6 +38,63 @@ function normalizeSignalingUrl(raw: string): string {
 function defaultSignalingUrl(): string {
   const raw = import.meta.env.VITE_SIGNALING_URL ?? "ws://localhost:3002/ws";
   return normalizeSignalingUrl(raw);
+}
+
+function signalKind(signal: unknown): string {
+  if (!signal || typeof signal !== "object") return "unknown";
+  const data = signal as Record<string, unknown>;
+  if (typeof data.type === "string") return data.type;
+  if ("candidate" in data) return "candidate";
+  if ("renegotiate" in data) return "renegotiate";
+  if ("transceiverRequest" in data) return "transceiverRequest";
+  return "unknown";
+}
+
+function decodePeerData(data: unknown): string {
+  if (typeof data === "string") return data;
+  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
+  if (ArrayBuffer.isView(data)) {
+    return new TextDecoder().decode(data);
+  }
+  return String(data);
+}
+
+function createConnectionId(nodeId: string, peerId: string): string {
+  const bytes = new Uint8Array(8);
+  globalThis.crypto.getRandomValues(bytes);
+  const suffix = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `${nodeId.slice(0, 8)}-${peerId.slice(0, 8)}-${Date.now().toString(36)}-${suffix}`;
+}
+
+function isLanP2pMode(): boolean {
+  if (import.meta.env.VITE_P2P_LAN === "1") return true;
+  if (typeof location === "undefined") return false;
+  const host = location.hostname;
+  return (
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    /^192\.168\./.test(host) ||
+    /^10\./.test(host) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+  );
+}
+
+function simplePeerRtcConfig(
+  lanStunUrls: string[],
+): { trickle: boolean; iceCompleteTimeout?: number; config: RTCConfiguration } {
+  const lan = isLanP2pMode();
+  if (!lan) {
+    return { trickle: true, config: { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] } };
+  }
+  // LAN mode: keep trickle ENABLED. With trickle disabled, the offer/answer must carry a
+  // final candidate set; Firefox (as responder) then declares ICE "failed" the instant it
+  // sees no immediately-pairable candidate, without ever gathering its own srflx. With
+  // trickle on, host + LAN-STUN srflx candidates (real IPs) flow incrementally over the
+  // signaling channel and ICE keeps checking until a working pair is found.
+  return {
+    trickle: true,
+    config: lanStunUrls.length ? { iceServers: [{ urls: lanStunUrls }] } : { iceServers: [] },
+  };
 }
 
 /** Decode the JWT (without verifying signature) to suggest the most likely failure cause. */
@@ -51,26 +122,29 @@ export type MeshConfig = {
 
 export class GroupP2pMesh {
   private readonly sockets = new Map<string, WebSocket>();
-  private readonly pcs = new Map<string, RTCPeerConnection>();
-  private readonly channels = new Map<string, RTCDataChannel>();
+  private readonly peers = new Map<string, PeerEntry>();
   private readonly providers = new Set<SecureYjsProvider>();
   private readonly authenticated = new Map<string, AuthenticatedPeer>();
   private readonly reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly pendingCandidates = new Map<string, RTCIceCandidateInit[]>();
-  private readonly connecting = new Set<string>();
   private readonly lastAlive = new Map<string, number>();
   private readonly currentRoomPeers = new Set<string>();
   private readonly roomPeersBySignal = new Map<string, Set<string>>();
+  private readonly seenSignalIds = new Set<string>();
+  private signalSeq = 0;
   private lastPeersInRoom = 0;
   private healthTimer: ReturnType<typeof setInterval> | null = null;
   private readonly wsReconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly wsReconnectAttempts = new Map<string, number>();
+  private readonly extraSignalingUrls = new Set<string>();
   private stopped = false;
   private static readonly HEALTH_INTERVAL_MS = 5_000;
   private static readonly WS_RECONNECT_MAX_MS = 30_000;
   private static readonly PONG_TIMEOUT_MS = 15_000;
   private static readonly DPE_PING = "__dpe_ping__";
   private static readonly DPE_PONG = "__dpe_pong__";
+  private static readonly PENDING_WIRE_MAX = 64;
+  private static readonly ANSWER_TIMEOUT_MS = 15_000;
+  private readonly pendingWireMessages: Array<{ peerId: string; text: string }> = [];
 
   private static classifyWireMessage(text: string): string {
     if (text === GroupP2pMesh.DPE_PING) return "ping";
@@ -83,7 +157,6 @@ export class GroupP2pMesh {
           return "signed_update";
         }
         if ("ciphertext" in json || "ciphertext_b64" in json) return "signed_update";
-        if ("kind" in json) return `signal_${String(json.kind)}`;
       }
       return "json_other";
     } catch {
@@ -98,7 +171,47 @@ export class GroupP2pMesh {
     for (const url of this.config.signalingUrls ?? []) {
       if (url.trim()) urls.add(normalizeSignalingUrl(url));
     }
+    for (const url of this.extraSignalingUrls) urls.add(url);
     return [...urls];
+  }
+
+  /** STUN URLs for LAN mode, derived from the rendezvous (signaling) hosts, e.g. stun:192.168.18.1:3478. */
+  private lanStunUrls(): string[] {
+    const override = (import.meta.env.VITE_LAN_STUN_URLS as string | undefined)?.trim();
+    if (override) {
+      return override.split(",").map((s) => s.trim()).filter(Boolean);
+    }
+    const port = (import.meta.env.VITE_LAN_STUN_PORT as string | undefined)?.trim() || "3478";
+    const hosts = new Set<string>();
+    for (const url of this.signalingUrls()) {
+      try {
+        const host = new URL(url).hostname;
+        if (host && host !== "localhost" && host !== "127.0.0.1") hosts.add(host);
+      } catch {
+        /* ignore malformed url */
+      }
+    }
+    return [...hosts].map((h) => `stun:${h}:${port}`);
+  }
+
+  /**
+   * Add rendezvous URLs to a RUNNING mesh without restarting it. Discovery is
+   * volatile, so the mesh must absorb new signaling endpoints live instead of being
+   * torn down (which would kill in-flight WebRTC handshakes and open channels).
+   */
+  addSignalingUrls(urls: string[]): void {
+    if (this.stopped) return;
+    for (const raw of urls) {
+      if (!raw?.trim()) continue;
+      const url = normalizeSignalingUrl(raw);
+      if (this.extraSignalingUrls.has(url)) continue;
+      this.extraSignalingUrls.add(url);
+      const existing = this.sockets.get(url);
+      if (existing?.readyState === WebSocket.OPEN || existing?.readyState === WebSocket.CONNECTING) {
+        continue;
+      }
+      void this.openSignalingSocket(url, false).catch(() => this.scheduleSignalingReconnect(url));
+    }
   }
 
   private hasOpenSignaling(): boolean {
@@ -120,9 +233,13 @@ export class GroupP2pMesh {
     return this.config.nodeId < peerId;
   }
 
-  /** A peer is usable only when its DataChannel is open (PC "connected" alone is not enough). */
   private hasOpenChannel(peerId: string): boolean {
-    return this.channels.get(peerId)?.readyState === "open";
+    return this.peers.get(peerId)?.connected === true;
+  }
+
+  private hasPendingConnection(peerId: string): boolean {
+    const entry = this.peers.get(peerId);
+    return Boolean(entry && !entry.peer.destroyed);
   }
 
   private notePeerAlive(peerId: string): void {
@@ -137,16 +254,15 @@ export class GroupP2pMesh {
   private runHealthCheck(): void {
     const now = Date.now();
 
-    // 1. Heartbeat: send ping and reap peers that stop responding.
-    for (const [peerId, ch] of this.channels) {
+    for (const [peerId, entry] of this.peers) {
       if (peerId === this.config.nodeId) {
         this.cleanupPeer(peerId);
         continue;
       }
-      if (ch.readyState !== "open") continue;
+      if (!entry.connected) continue;
 
       try {
-        ch.send(GroupP2pMesh.DPE_PING);
+        entry.peer.send(GroupP2pMesh.DPE_PING);
       } catch {
         markRealtimeAuthError(`channel_send_failed:${peerId.slice(0, 6)}`);
         traceRealtime("mesh", "health_ping_failed", { peer: peerId.slice(0, 12) }, "warn");
@@ -162,22 +278,11 @@ export class GroupP2pMesh {
       }
     }
 
-    // 2. Tear down any pc that is already in failed/closed state.
-    for (const [peerId, pc] of this.pcs) {
-      const st = pc.connectionState;
-      if (st === "failed" || st === "closed") this.cleanupPeer(peerId);
-    }
-
-    // 3. Reconcile against signaling's latest peer list.
     if (this.hasOpenSignaling()) {
       for (const peerId of this.currentRoomPeers) {
         if (peerId === this.config.nodeId) continue;
-        if (this.hasOpenChannel(peerId) || this.connecting.has(peerId)) continue;
-        const pc = this.pcs.get(peerId);
-        if (pc) this.cleanupPeer(peerId);
-        if (this.shouldInitiate(peerId)) {
-          void this.connectPeer(peerId);
-        }
+        if (this.hasOpenChannel(peerId) || this.hasPendingConnection(peerId)) continue;
+        if (this.shouldInitiate(peerId)) this.connectPeer(peerId, true);
       }
     }
 
@@ -189,8 +294,8 @@ export class GroupP2pMesh {
       this.lastPeersInRoom = Math.max(0, peersInRoom);
     }
     let channelsOpen = 0;
-    for (const ch of this.channels.values()) {
-      if (ch.readyState === "open") channelsOpen += 1;
+    for (const entry of this.peers.values()) {
+      if (entry.connected) channelsOpen += 1;
     }
     markRealtimePeerStats({
       peersInRoom: this.lastPeersInRoom,
@@ -202,14 +307,26 @@ export class GroupP2pMesh {
   attachProvider(provider: SecureYjsProvider): void {
     this.providers.add(provider);
     this.syncProvidersWithAuthenticated();
+    this.flushPendingWire();
+  }
+
+  private flushPendingWire(): void {
+    if (this.providers.size === 0 || this.pendingWireMessages.length === 0) return;
+    const batch = [...this.pendingWireMessages];
+    this.pendingWireMessages.length = 0;
+    traceRealtime("provider", "wire_rx_flush", { count: batch.length }, "info");
+    for (const { peerId, text } of batch) {
+      this.ensurePeerOnProviders(peerId);
+      for (const p of this.providers) void p.handleWireMessage(text);
+    }
   }
 
   /** Re-send AuthEnvelope on every open channel (e.g. after ACL/JWT role change). */
   async reauthAllChannels(): Promise<void> {
     const tasks: Promise<void>[] = [];
-    for (const [peerId, ch] of this.channels) {
-      if (ch.readyState !== "open") continue;
-      tasks.push(this.sendAuthToPeer(peerId, ch, true));
+    for (const [peerId, entry] of this.peers) {
+      if (!entry.connected) continue;
+      tasks.push(this.sendAuthToPeer(peerId, entry, true));
     }
     await Promise.all(tasks);
   }
@@ -249,11 +366,11 @@ export class GroupP2pMesh {
     const bytes = new TextEncoder().encode(text).byteLength;
     const kind = GroupP2pMesh.classifyWireMessage(text);
     let sent = 0;
-    for (const [peerId, ch] of this.channels) {
-      if (ch.readyState !== "open") continue;
+    for (const [peerId, entry] of this.peers) {
+      if (!entry.connected) continue;
       if (kind === "signed_update" && !this.authenticated.has(peerId)) continue;
       try {
-        ch.send(text);
+        entry.peer.send(text);
         markRealtimeTx(bytes);
         sent += 1;
       } catch {
@@ -293,10 +410,7 @@ export class GroupP2pMesh {
   private scheduleSignalingReconnect(url: string): void {
     if (this.stopped || this.wsReconnectTimers.has(url)) return;
     const attempts = this.wsReconnectAttempts.get(url) ?? 0;
-    const delay = Math.min(
-      1000 * 2 ** attempts,
-      GroupP2pMesh.WS_RECONNECT_MAX_MS,
-    );
+    const delay = Math.min(1000 * 2 ** attempts, GroupP2pMesh.WS_RECONNECT_MAX_MS);
     this.wsReconnectAttempts.set(url, attempts + 1);
     traceRealtime("signal", "ws_reconnect_scheduled", { url, delayMs: delay }, "warn");
     const timer = setTimeout(() => {
@@ -342,11 +456,7 @@ export class GroupP2pMesh {
       };
       ws.onerror = () => {
         window.clearTimeout(timeout);
-        if (isInitial) {
-          fail(`无法连接信令服务，请运行 pnpm dev 或检查 ${url}`);
-        } else {
-          fail(`信令重连失败 (${url})`);
-        }
+        fail(isInitial ? `无法连接信令服务，请运行 pnpm dev 或检查 ${url}` : `信令重连失败 (${url})`);
       };
       ws.onclose = () => {
         window.clearTimeout(timeout);
@@ -373,9 +483,7 @@ export class GroupP2pMesh {
 
   stop(): void {
     this.stopped = true;
-    for (const timer of this.wsReconnectTimers.values()) {
-      clearTimeout(timer);
-    }
+    for (const timer of this.wsReconnectTimers.values()) clearTimeout(timer);
     this.wsReconnectTimers.clear();
     if (this.healthTimer) clearInterval(this.healthTimer);
     this.healthTimer = null;
@@ -383,16 +491,15 @@ export class GroupP2pMesh {
     this.sockets.clear();
     for (const t of this.reconnectTimers.values()) clearTimeout(t);
     this.reconnectTimers.clear();
-    for (const pc of this.pcs.values()) pc.close();
-    this.pcs.clear();
-    this.channels.clear();
+    for (const entry of this.peers.values()) entry.peer.destroy();
+    this.peers.clear();
     this.authenticated.clear();
     this.providers.clear();
     this.lastAlive.clear();
-    this.pendingCandidates.clear();
-    this.connecting.clear();
     this.currentRoomPeers.clear();
     this.roomPeersBySignal.clear();
+    this.seenSignalIds.clear();
+    this.pendingWireMessages.length = 0;
     this.emitPeerStats(0);
   }
 
@@ -405,33 +512,21 @@ export class GroupP2pMesh {
       clearTimeout(timer);
       this.reconnectTimers.delete(peerId);
     }
-    const pc = this.pcs.get(peerId);
-    if (pc) {
-      pc.onconnectionstatechange = null;
-      pc.onicecandidate = null;
-      pc.ondatachannel = null;
+    const entry = this.peers.get(peerId);
+    if (entry) {
+      if (entry.answerTimer) {
+        clearTimeout(entry.answerTimer);
+        entry.answerTimer = null;
+      }
       try {
-        pc.close();
+        entry.peer.destroy();
       } catch {
         /* ignore */
       }
     }
-    this.pcs.delete(peerId);
-    const ch = this.channels.get(peerId);
-    if (ch) {
-      ch.onopen = null;
-      ch.onclose = null;
-      ch.onmessage = null;
-      try {
-        ch.close();
-      } catch {
-        /* ignore */
-      }
-    }
-    this.channels.delete(peerId);
+    this.peers.delete(peerId);
     this.authenticated.delete(peerId);
     this.lastAlive.delete(peerId);
-    this.pendingCandidates.delete(peerId);
     for (const p of this.providers) p.unregisterPeer(peerId);
     this.emitPeerStats();
   }
@@ -491,10 +586,9 @@ export class GroupP2pMesh {
       this.emitPeerStats(Math.max(0, this.currentRoomPeers.size - 1));
       for (const peerId of this.currentRoomPeers) {
         if (peerId === this.config.nodeId) continue;
-        if (this.hasOpenChannel(peerId) || this.connecting.has(peerId)) continue;
-        if (this.pcs.has(peerId)) this.cleanupPeer(peerId);
+        if (this.hasOpenChannel(peerId) || this.hasPendingConnection(peerId)) continue;
         if (!this.shouldInitiate(peerId)) continue;
-        void this.connectPeer(peerId);
+        this.connectPeer(peerId, true);
       }
       return;
     }
@@ -502,244 +596,374 @@ export class GroupP2pMesh {
     if (msg.type !== "signal" || !msg.payload) return;
     const from = String(msg.payload.from ?? "");
     if (!from || from === this.config.nodeId) return;
-
-    if (msg.payload.kind === "offer" && msg.payload.sdp) {
-      // Perfect negotiation: lower node_id is always initiator.
-      if (this.shouldInitiate(from)) return;
-      if (this.hasOpenChannel(from)) return;
-
-      let pc = this.pcs.get(from);
-      if (pc) {
-        this.cleanupPeer(from);
-        pc = undefined;
+    const signalId = typeof msg.payload.signal_id === "string" ? msg.payload.signal_id : "";
+    const connectionId = typeof msg.payload.connection_id === "string" ? msg.payload.connection_id : "";
+    if (signalId) {
+      const seenKey = `${from}:${connectionId}:${signalId}`;
+      if (this.seenSignalIds.has(seenKey)) {
+        traceRealtime("signal", "signal_rx_duplicate", {
+          url,
+          from: from.slice(0, 12),
+          signalId,
+          connectionId,
+        }, "debug");
+        return;
       }
-      if (!pc) {
-        await this.connectPeer(from, false);
-        pc = this.pcs.get(from);
-        if (!pc) return;
+      this.seenSignalIds.add(seenKey);
+      if (this.seenSignalIds.size > 1000) {
+        const keep = [...this.seenSignalIds].slice(-500);
+        this.seenSignalIds.clear();
+        for (const key of keep) this.seenSignalIds.add(key);
       }
-
-      await pc.setRemoteDescription(
-        new RTCSessionDescription(msg.payload.sdp as RTCSessionDescriptionInit),
-      );
-      await this.flushCandidates(from, pc);
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      this.sendSignal(from, { kind: "answer", sdp: answer });
+    }
+    const signal = msg.payload.signal as SimplePeerSignal | undefined;
+    if (!signal) {
+      traceRealtime("signal", "signal_ignored_missing_payload", { from: from.slice(0, 12) }, "warn");
       return;
     }
 
-    const pc = this.pcs.get(from);
-    if (!pc) return;
+    traceRealtime("signal", "signal_rx", {
+      url,
+      from: from.slice(0, 12),
+      kind: signalKind(signal),
+      signalId,
+      connectionId,
+    }, "debug");
 
-    if (msg.payload.kind === "answer" && msg.payload.sdp) {
-      if (pc.signalingState !== "have-local-offer") return;
-      await pc.setRemoteDescription(
-        new RTCSessionDescription(msg.payload.sdp as RTCSessionDescriptionInit),
-      );
-      await this.flushCandidates(from, pc);
-    } else if (msg.payload.kind === "candidate" && msg.payload.candidate) {
-      const candidate = msg.payload.candidate as RTCIceCandidateInit;
-      if (pc.remoteDescription) {
-        try {
-          await pc.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch {
-          /* ignore */
-        }
-      } else {
-        const queue = this.pendingCandidates.get(from) ?? [];
-        queue.push(candidate);
-        this.pendingCandidates.set(from, queue);
+    const isOffer = signal.type === "offer";
+    if (isOffer) {
+      traceRealtime("signal", "offer_received", {
+        url,
+        from: from.slice(0, 12),
+        hasPeer: this.peers.has(from),
+      }, "info");
+      if (this.shouldInitiate(from)) {
+        traceRealtime("signal", "offer_ignored_role", { from: from.slice(0, 12) }, "warn");
+        return;
       }
+      const existing = this.peers.get(from);
+      if (existing?.peer.destroyed) {
+        this.cleanupPeer(from);
+      } else if (existing && connectionId && existing.connectionId !== connectionId) {
+        traceRealtime("signal", "offer_replaces_existing_peer", {
+          from: from.slice(0, 12),
+          previousConnectionId: existing.connectionId,
+          connectionId,
+        }, "warn");
+        this.cleanupPeer(from);
+      }
+      if (!this.peers.has(from)) {
+        this.connectPeer(from, false, connectionId || undefined);
+        traceRealtime("signal", "responder_peer_created", { peer: from.slice(0, 12) }, "debug");
+      }
+    }
+
+    const entry = this.peers.get(from);
+    if (!entry) {
+      traceRealtime("signal", "signal_ignored_no_peer", {
+        from: from.slice(0, 12),
+        kind: signalKind(signal),
+        signalId,
+        connectionId,
+      }, "warn");
+      return;
+    }
+    if (connectionId && connectionId !== entry.connectionId) {
+      traceRealtime("signal", "signal_ignored_stale_connection", {
+        from: from.slice(0, 12),
+        kind: signalKind(signal),
+        signalId,
+        connectionId,
+        currentConnectionId: entry.connectionId,
+      }, "warn");
+      return;
+    }
+
+    try {
+      entry.peer.signal(signal as SimplePeerSignalInput);
+      if (signalKind(signal) === "answer" && entry.answerTimer) {
+        clearTimeout(entry.answerTimer);
+        entry.answerTimer = null;
+        traceRealtime("signal", "answer_timer_cleared", {
+          from: from.slice(0, 12),
+          signalId,
+          connectionId: entry.connectionId,
+        }, "debug");
+      }
+      traceRealtime("signal", "signal_apply_ok", {
+        from: from.slice(0, 12),
+        kind: signalKind(signal),
+        signalId,
+        connectionId: entry.connectionId,
+      }, "debug");
+    } catch (e) {
+      traceRealtime("signal", "signal_apply_failed", {
+        from: from.slice(0, 12),
+        kind: signalKind(signal),
+        signalId,
+        connectionId: entry.connectionId,
+        error: e instanceof Error ? e.message : String(e),
+      }, "warn");
     }
   }
 
-  private async flushCandidates(peerId: string, pc: RTCPeerConnection): Promise<void> {
-    const pending = this.pendingCandidates.get(peerId);
-    if (!pending?.length) return;
-    this.pendingCandidates.delete(peerId);
-    for (const candidate of pending) {
-      try {
-        await pc.addIceCandidate(new RTCIceCandidate(candidate));
-      } catch {
-        /* ignore */
-      }
+  private signalingSocketsForPeer(peerId: string): [string, WebSocket][] {
+    const candidates: [string, WebSocket][] = [];
+    for (const [url, socket] of this.sockets) {
+      if (socket.readyState !== WebSocket.OPEN) continue;
+      const peers = this.roomPeersBySignal.get(url);
+      if (peers?.has(peerId)) candidates.push([url, socket]);
     }
+    candidates.sort(([a], [b]) => a.localeCompare(b));
+    if (candidates.length > 0) return candidates;
+
+    return [...this.sockets.entries()]
+      .filter(([, socket]) => socket.readyState === WebSocket.OPEN)
+      .sort(([a], [b]) => a.localeCompare(b));
   }
 
-  private sendSignal(to: string, payload: Record<string, unknown>): void {
+  private sendSignal(to: string, signal: SimplePeerSignal, connectionId: string): void {
+    const signalId = `${this.config.nodeId.slice(0, 12)}-${++this.signalSeq}`;
     const message = JSON.stringify({
       type: "signal",
       room: this.config.groupId,
       to,
-      payload,
+      payload: { signal, signal_id: signalId, connection_id: connectionId },
     });
-    for (const socket of this.sockets.values()) {
-      if (socket.readyState === WebSocket.OPEN) socket.send(message);
-    }
-  }
-
-  private async connectPeer(peerId: string, initiator = this.shouldInitiate(peerId)): Promise<void> {
-    if (peerId === this.config.nodeId) return;
-    if (initiator !== this.shouldInitiate(peerId)) return;
-    if (this.connecting.has(peerId)) return;
-    traceRealtime("mesh", "connect_peer", { peer: peerId.slice(0, 12), initiator }, "info");
-
-    const existing = this.pcs.get(peerId);
-    const existingChannel = this.channels.get(peerId);
-    if (this.hasOpenChannel(peerId)) return;
-    if (
-      existingChannel?.readyState === "connecting" &&
-      (existing?.connectionState === "connected" || existing?.connectionState === "connecting")
-    ) {
+    const selected = this.signalingSocketsForPeer(to);
+    if (selected.length === 0) {
+      traceRealtime("signal", "signal_send_failed_no_socket", {
+        to: to.slice(0, 12),
+        kind: signalKind(signal),
+        signalId,
+      }, "warn");
       return;
     }
+    for (const [url, socket] of selected) {
+      traceRealtime("signal", "signal_send", {
+        url,
+        to: to.slice(0, 12),
+        kind: signalKind(signal),
+        signalId,
+        connectionId,
+        fanout: selected.length,
+      }, "debug");
+      socket.send(message);
+    }
+    if (signalKind(signal) === "offer") this.armAnswerTimeout(to, signalId);
+  }
 
-    this.connecting.add(peerId);
+  private connectPeer(peerId: string, initiator = this.shouldInitiate(peerId), connectionId?: string): void {
+    if (peerId === this.config.nodeId) return;
+    if (initiator && !this.shouldInitiate(peerId)) return;
+    const existing = this.peers.get(peerId);
+    if (existing && !existing.peer.destroyed) return;
+    const nextConnectionId = connectionId ?? createConnectionId(this.config.nodeId, peerId);
+    traceRealtime("mesh", "connect_peer", {
+      peer: peerId.slice(0, 12),
+      initiator,
+      connectionId: nextConnectionId,
+    }, "info");
+
     this.cleanupPeer(peerId);
 
-    try {
-      const pc = new RTCPeerConnection({
-        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-      });
-      this.pcs.set(peerId, pc);
+    const rtc = simplePeerRtcConfig(this.lanStunUrls());
+    traceRealtime(
+      "mesh",
+      "rtc_config",
+      {
+        peer: peerId.slice(0, 12),
+        initiator,
+        trickle: rtc.trickle,
+        iceServers: (rtc.config.iceServers ?? []).flatMap((s) =>
+          Array.isArray(s.urls) ? s.urls : [s.urls],
+        ),
+      },
+      "info",
+    );
+    const peer = new SimplePeer({
+      initiator,
+      trickle: rtc.trickle,
+      iceCompleteTimeout: rtc.iceCompleteTimeout,
+      channelName: "dpe",
+      channelConfig: { ordered: true },
+      config: rtc.config,
+      objectMode: true,
+    });
+    const entry: PeerEntry = {
+      peer,
+      connected: false,
+      authSending: false,
+      answerTimer: null,
+      connectionId: nextConnectionId,
+    };
+    this.peers.set(peerId, entry);
+    this.tracePeerConnectionState(peerId, entry, initiator);
 
-      pc.onconnectionstatechange = () => {
-        const st = pc.connectionState;
-        traceRealtime("mesh", "pc_state", { peer: peerId.slice(0, 12), state: st }, "debug");
-        if (st === "connected") {
-          const pending = this.reconnectTimers.get(peerId);
-          if (pending) {
-            clearTimeout(pending);
-            this.reconnectTimers.delete(peerId);
-          }
-          return;
-        }
-
-        if (st === "failed" || st === "closed") {
-          this.cleanupPeer(peerId);
-          if (this.hasOpenSignaling() && this.shouldInitiate(peerId)) {
-            void this.connectPeer(peerId);
-          }
-          return;
-        }
-
-        if (st === "disconnected") {
-          if (this.reconnectTimers.has(peerId)) return;
-          const timer = setTimeout(() => {
-            this.reconnectTimers.delete(peerId);
-            const current = this.pcs.get(peerId);
-            if (!current || current.connectionState !== "disconnected") return;
-            this.cleanupPeer(peerId);
-            if (this.hasOpenSignaling() && this.shouldInitiate(peerId)) {
-              void this.connectPeer(peerId);
-            }
-          }, 4000);
-          this.reconnectTimers.set(peerId, timer);
-        }
-      };
-
-      pc.onicecandidate = (ev) => {
-        if (ev.candidate) {
-          this.sendSignal(peerId, { kind: "candidate", candidate: ev.candidate.toJSON() });
-        }
-      };
-
-      if (initiator) {
-        const channel = pc.createDataChannel("dpe", { ordered: true });
-        this.wireChannel(peerId, channel);
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        this.sendSignal(peerId, { kind: "offer", sdp: offer });
-      } else {
-        pc.ondatachannel = (ev) => {
-          if (ev.channel.label !== "dpe") return;
-          if (this.channels.has(peerId)) return;
-          this.wireChannel(peerId, ev.channel);
-        };
+    peer.on("signal", (signal: unknown) => {
+      const current = this.peers.get(peerId);
+      if (current !== entry) {
+        traceRealtime("signal", "signal_send_ignored_stale_peer", {
+          to: peerId.slice(0, 12),
+          kind: signalKind(signal),
+          connectionId: entry.connectionId,
+        }, "debug");
+        return;
       }
-    } finally {
-      this.connecting.delete(peerId);
-    }
+      if (entry.answerTimer && signalKind(signal) === "answer") {
+        clearTimeout(entry.answerTimer);
+        entry.answerTimer = null;
+      }
+      this.sendSignal(peerId, signal as SimplePeerSignal, entry.connectionId);
+    });
+
+    peer.on("connect", () => {
+      const current = this.peers.get(peerId);
+      if (current !== entry) return;
+      entry.connected = true;
+      traceRealtime("mesh", "channel_open", {
+        peer: peerId.slice(0, 12),
+        transport: "simple-peer",
+        connectionId: entry.connectionId,
+      }, "info");
+      this.notePeerAlive(peerId);
+      this.emitPeerStats();
+      void this.sendAuthToPeer(peerId, entry, false);
+    });
+
+    peer.on("data", (data: unknown) => {
+      void this.onPeerData(peerId, entry, decodePeerData(data)).catch(() => {
+        /* ignore per-message channel races */
+      });
+    });
+
+    peer.on("close", () => {
+      const current = this.peers.get(peerId);
+      if (current !== entry) return;
+      traceRealtime("mesh", "peer_closed", { peer: peerId.slice(0, 12) }, "warn");
+      this.cleanupPeer(peerId);
+      if (!this.stopped && this.hasOpenSignaling() && this.currentRoomPeers.has(peerId) && this.shouldInitiate(peerId)) {
+        this.schedulePeerReconnect(peerId);
+      }
+    });
+
+    peer.on("error", (err: unknown) => {
+      traceRealtime("mesh", "peer_error", {
+        peer: peerId.slice(0, 12),
+        error: err instanceof Error ? err.message : String(err),
+        connectionId: entry.connectionId,
+      }, "warn");
+    });
   }
 
-  private async sendAuthToPeer(
-    peerId: string,
-    channel: RTCDataChannel,
-    force = false,
-  ): Promise<void> {
-    if (channel.readyState !== "open") {
-      markRealtimeAuthError("auth_not_open_before_jwt");
+  private tracePeerConnectionState(peerId: string, entry: PeerEntry, initiator: boolean): void {
+    const pc = (entry.peer as SimplePeerInternals)._pc;
+    if (!pc) {
+      traceRealtime("mesh", "pc_trace_unavailable", {
+        peer: peerId.slice(0, 12),
+        initiator,
+        connectionId: entry.connectionId,
+      }, "debug");
       return;
     }
 
-    const jwt = await this.config.getJwt();
-    if (channel.readyState !== "open") {
-      markRealtimeAuthError("auth_not_open_after_jwt");
-      await new Promise((r) => setTimeout(r, 150));
-      if (channel.readyState !== "open") return;
-    }
-
-    const envelope: AuthEnvelope = {
-      type: "auth",
-      node_id: this.config.nodeId,
-      jwt,
+    const traceState = (event: string) => {
+      traceRealtime("mesh", event, {
+        peer: peerId.slice(0, 12),
+        initiator,
+        connectionId: entry.connectionId,
+        connectionState: pc.connectionState,
+        iceConnectionState: pc.iceConnectionState,
+        iceGatheringState: pc.iceGatheringState,
+        signalingState: pc.signalingState,
+      }, "debug");
     };
+
+    traceState("pc_state_initial");
+    pc.addEventListener("connectionstatechange", () => traceState("pc_connection_state"));
+    pc.addEventListener("iceconnectionstatechange", () => traceState("pc_ice_state"));
+    pc.addEventListener("icegatheringstatechange", () => traceState("pc_ice_gathering_state"));
+    pc.addEventListener("signalingstatechange", () => traceState("pc_signaling_state"));
+    pc.addEventListener("icecandidate", (e) => {
+      const c = (e as RTCPeerConnectionIceEvent).candidate;
+      if (!c) {
+        traceRealtime("mesh", "ice_candidate_end", { peer: peerId.slice(0, 12) }, "debug");
+        return;
+      }
+      traceRealtime(
+        "mesh",
+        "ice_candidate",
+        { peer: peerId.slice(0, 12), type: c.type ?? null, protocol: c.protocol ?? null, address: c.address ?? null },
+        "debug",
+      );
+    });
+    pc.addEventListener("icecandidateerror", (e) => {
+      const err = e as RTCPeerConnectionIceErrorEvent;
+      traceRealtime(
+        "mesh",
+        "ice_candidate_error",
+        { peer: peerId.slice(0, 12), url: err.url ?? null, errorCode: err.errorCode ?? null, errorText: err.errorText ?? null },
+        "warn",
+      );
+    });
+  }
+
+  private armAnswerTimeout(peerId: string, signalId: string): void {
+    const entry = this.peers.get(peerId);
+    if (!entry || entry.connected) return;
+    if (entry.answerTimer) clearTimeout(entry.answerTimer);
+    entry.answerTimer = setTimeout(() => {
+      const current = this.peers.get(peerId);
+      if (!current || current.connected || current.peer.destroyed) return;
+      traceRealtime("signal", "answer_timeout", {
+        peer: peerId.slice(0, 12),
+        signalId,
+      }, "warn");
+      this.cleanupPeer(peerId);
+    }, GroupP2pMesh.ANSWER_TIMEOUT_MS);
+  }
+
+  private schedulePeerReconnect(peerId: string): void {
+    if (this.reconnectTimers.has(peerId)) return;
+    const timer = setTimeout(() => {
+      this.reconnectTimers.delete(peerId);
+      if (this.stopped || !this.hasOpenSignaling() || !this.currentRoomPeers.has(peerId)) return;
+      if (this.shouldInitiate(peerId) && !this.hasPendingConnection(peerId)) {
+        this.connectPeer(peerId, true);
+      }
+    }, 1000);
+    this.reconnectTimers.set(peerId, timer);
+  }
+
+  private async sendAuthToPeer(peerId: string, entry: PeerEntry, force = false): Promise<void> {
+    if (!entry.connected || entry.authSending) return;
+    entry.authSending = true;
     try {
-      channel.send(serializeAuthEnvelope(envelope));
+      const jwt = await this.config.getJwt();
+      if (!entry.connected || entry.peer.destroyed) {
+        markRealtimeAuthError("auth_not_open_after_jwt");
+        return;
+      }
+
+      const envelope: AuthEnvelope = {
+        type: "auth",
+        node_id: this.config.nodeId,
+        jwt,
+      };
+      entry.peer.send(serializeAuthEnvelope(envelope));
       traceRealtime("auth", "auth_sent", { peer: peerId.slice(0, 12), force }, "debug");
     } catch {
       markRealtimeAuthError("auth_send_failed");
+    } finally {
+      entry.authSending = false;
     }
   }
 
-  private wireChannel(peerId: string, channel: RTCDataChannel): void {
-    if (peerId === this.config.nodeId) return;
-
-    const prev = this.channels.get(peerId);
-    if (prev && prev !== channel) {
-      prev.onopen = null;
-      prev.onclose = null;
-      prev.onmessage = null;
-      try {
-        prev.close();
-      } catch {
-        /* ignore */
-      }
-    }
-
-    this.channels.set(peerId, channel);
-
-    const sendAuth = () => this.sendAuthToPeer(peerId, channel, false);
-
-    channel.onopen = () => {
-      traceRealtime("mesh", "channel_open", { peer: peerId.slice(0, 12) }, "info");
-      this.notePeerAlive(peerId);
-      this.emitPeerStats();
-      void sendAuth().catch(() => {
-        /* ignore auth race errors */
-      });
-    };
-    channel.onclose = () => this.cleanupPeer(peerId);
-
-    channel.onmessage = (ev) => {
-      void this.onChannelMessage(peerId, channel, String(ev.data), () => sendAuth()).catch(() => {
-        /* ignore per-message channel races */
-      });
-    };
-  }
-
-  private async onChannelMessage(
-    peerId: string,
-    channel: RTCDataChannel,
-    text: string,
-    ensureAuthSent: () => Promise<void>,
-  ): Promise<void> {
-    // Lightweight heartbeat bypass — bypass JSON.parse/auth path.
+  private async onPeerData(peerId: string, entry: PeerEntry, text: string): Promise<void> {
     if (text === GroupP2pMesh.DPE_PING) {
-      if (channel.readyState === "open") {
+      if (entry.connected) {
         try {
-          channel.send(GroupP2pMesh.DPE_PONG);
+          entry.peer.send(GroupP2pMesh.DPE_PONG);
         } catch {
           /* ignore */
         }
@@ -760,11 +984,11 @@ export class GroupP2pMesh {
 
     const authParse = authEnvelopeSchema.safeParse(json);
     if (authParse.success) {
-      await ensureAuthSent();
+      await this.sendAuthToPeer(peerId, entry, false);
       const peerPk = this.config.memberPublicKeys.get(peerId);
       if (!peerPk) {
         markRealtimeAuthError("peer_public_key_missing");
-        channel.close();
+        this.cleanupPeer(peerId);
         return;
       }
       try {
@@ -782,7 +1006,7 @@ export class GroupP2pMesh {
         } else {
           markRealtimeAuthError(`auth_verify_failed${detail ? `:${detail}` : ""}`);
         }
-        channel.close();
+        this.cleanupPeer(peerId);
       }
       return;
     }
@@ -793,13 +1017,22 @@ export class GroupP2pMesh {
     this.notePeerAlive(peerId);
     const providerCount = this.providers.size;
     if (providerCount === 0) {
+      this.pendingWireMessages.push({ peerId, text });
+      if (this.pendingWireMessages.length > GroupP2pMesh.PENDING_WIRE_MAX) {
+        this.pendingWireMessages.splice(
+          0,
+          this.pendingWireMessages.length - GroupP2pMesh.PENDING_WIRE_MAX,
+        );
+      }
       traceRealtime(
         "provider",
-        "wire_rx_no_provider",
-        { peer: peerId.slice(0, 12), kind, bytes },
+        "wire_rx_buffered",
+        { peer: peerId.slice(0, 12), kind, bytes, queued: this.pendingWireMessages.length },
         "warn",
       );
-    } else if (kind === "signed_update") {
+      return;
+    }
+    if (kind === "signed_update") {
       traceRealtime(
         "yjs",
         "wire_rx",

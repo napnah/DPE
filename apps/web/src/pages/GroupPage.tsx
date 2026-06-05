@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { isFolderDoc, randomUuid } from "@dpe/shared";
 import { DocTreeNav, ROOT_DOC_ID } from "../components/DocTreeNav";
@@ -14,7 +14,7 @@ import {
   type DocNodeRow,
 } from "../lib/api";
 import { useIdentity } from "../lib/use-identity";
-import { startGroupMesh, stopGroupMesh } from "../lib/mesh-context";
+import { getActiveMesh, startGroupMesh, stopGroupMesh } from "../lib/mesh-context";
 import {
   getRealtimeDebugSnapshot,
   resetRealtimeDebugSnapshot,
@@ -23,7 +23,13 @@ import {
 } from "../lib/realtime-debug";
 import { RealtimeTracePanel } from "../components/RealtimeTracePanel";
 import { clearRealtimeTrace, setRealtimeTraceContext } from "../lib/realtime-trace";
-import { fetchDiscovery, type LanPeer } from "../lib/lan";
+import {
+  buildMeshSignalingUrls,
+  fetchDiscovery,
+  fetchLocalSignalingUrl,
+  subscribeDiscovery,
+  type LanPeer,
+} from "../lib/lan";
 
 function isFolder(n: DocNodeRow) {
   return isFolderDoc(n);
@@ -61,6 +67,7 @@ export default function GroupPage() {
     resolveGroupControlPlaneUrl(gid, searchParams.get("control")),
   );
   const [peers, setPeers] = useState<LanPeer[]>([]);
+  const [localSignalingUrl, setLocalSignalingUrl] = useState<string | undefined>();
   const [p2pStatus, setP2pStatus] = useState("未连接");
   const [error, setError] = useState<string | null>(null);
   const [debug, setDebug] = useState<RealtimeDebugSnapshot>(() => getRealtimeDebugSnapshot());
@@ -73,7 +80,48 @@ export default function GroupPage() {
   const selectedNode = nodes.find((n) => n.docId === selectedId);
   const selectedIsFolder = selectedNode ? isFolder(selectedNode) : true;
   const syncDocId = selectedIsFolder ? ROOT_DOC_ID : selectedId;
+  const syncDocIdRef = useRef(syncDocId);
+  const peerSignalingUrls = useMemo(
+    () => [...new Set(peers.map((p) => p.signalingUrl).filter(Boolean))].sort(),
+    [peers],
+  );
+  const peerSignalingKey = peerSignalingUrls.join("\n");
+  // Signaling URLs must accumulate monotonically. lan-agent discovery is probe-based
+  // and flaps (a neighbour briefly drops out of the list); if we let the signaling set
+  // SHRINK on a flap, meshSignalingKey changes and the whole mesh is stopped/restarted,
+  // tearing down the WebRTC offer/answer handshake before it can complete. So we only
+  // ever ADD rendezvous URLs, never remove them.
+  const seenSignalingRef = useRef<Set<string>>(new Set());
+  const [meshSignalingUrls, setMeshSignalingUrls] = useState<string[]>([]);
+  useEffect(() => {
+    const candidates = buildMeshSignalingUrls({
+      localSignalingUrl,
+      peerSignalingUrls,
+      controlPlaneUrl: controlPlaneUrl ?? loadGroupControlPlaneUrl(gid) ?? undefined,
+    });
+    let grew = false;
+    for (const u of candidates) {
+      if (!seenSignalingRef.current.has(u)) {
+        seenSignalingRef.current.add(u);
+        grew = true;
+      }
+    }
+    if (grew) setMeshSignalingUrls([...seenSignalingRef.current].sort());
+  }, [localSignalingUrl, controlPlaneUrl, gid, peerSignalingKey]);
+  const meshSignalingKey = meshSignalingUrls.join("\n");
+  const meshSignalingUrlsRef = useRef<string[]>([]);
+  meshSignalingUrlsRef.current = meshSignalingUrls;
+  // Push newly-learned rendezvous URLs into the RUNNING mesh instead of restarting it.
+  useEffect(() => {
+    getActiveMesh()?.addSignalingUrls(meshSignalingUrls);
+  }, [meshSignalingKey]);
   const controlQuery = controlPlaneUrl ? `?control=${encodeURIComponent(controlPlaneUrl)}` : "";
+  useEffect(() => {
+    syncDocIdRef.current = syncDocId;
+  }, [syncDocId]);
+  useEffect(() => {
+    void getActiveMesh()?.reauthAllChannels();
+  }, [syncDocId]);
   useEffect(() => {
     setRealtimeTraceContext({
       groupId: gid,
@@ -110,25 +158,47 @@ export default function GroupPage() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    void fetchLocalSignalingUrl().then((url) => {
+      if (!cancelled && url) setLocalSignalingUrl(url);
+    });
+    void fetchDiscovery()
+      .then((d) => {
+        if (!cancelled) setPeers(d.peers);
+      })
+      .catch(() => {
+        if (!cancelled) setPeers([]);
+      });
+    const off = subscribeDiscovery((list) => {
+      if (!cancelled) setPeers(list);
+    });
+    return () => {
+      cancelled = true;
+      off();
+    };
+  }, []);
+
+  useEffect(() => {
     if (!nodeId || !gid) return;
     let cancelled = false;
     void (async () => {
       try {
-        const disc = await fetchDiscovery().catch(() => ({ peers: [] as LanPeer[] }));
-        if (cancelled) return;
-        setPeers(disc.peers);
-        const myGroups = await api.listAllGroupsFederated(nodeId, disc.peers);
+        const myGroups = await api.listAllGroupsFederated(nodeId, peers);
         if (cancelled) return;
         const card = myGroups.find(
           (g) => g.group_id === gid && (!controlPlaneUrl || g.control_plane_url === controlPlaneUrl),
         ) ?? myGroups.find((g) => g.group_id === gid);
         setIsOwner(card?.is_owner ?? false);
-        const cp = card?.control_plane_url ?? controlPlaneUrl ?? loadGroupControlPlaneUrl(gid);
+        const cp = card?.control_plane_url ?? controlPlaneUrl ?? loadGroupControlPlaneUrl(gid) ?? undefined;
         if (card) {
           setGroupName(card.name);
-          setAdminPublicKey(card.issuer_public_key ?? loadGroupAdminKey(gid));
+          // Never downgrade a known issuer key to the local fallback: a partial
+          // federated response would otherwise flip adminPublicKey and churn the mesh.
+          setAdminPublicKey((prev) => card.issuer_public_key ?? prev ?? loadGroupAdminKey(gid) ?? null);
           if (cp) {
-            setControlPlaneUrl(cp);
+            // Pin the first resolved control-plane URL; discovery refreshes must not
+            // flip it back and forth (which would stop/start the whole P2P mesh).
+            setControlPlaneUrl((prev) => prev ?? cp);
             saveGroupControlPlaneUrl(gid, cp);
           }
         }
@@ -144,7 +214,7 @@ export default function GroupPage() {
     return () => {
       cancelled = true;
     };
-  }, [gid, nodeId, controlPlaneUrl]);
+  }, [gid, nodeId, controlPlaneUrl, peerSignalingKey]);
 
   useEffect(() => {
     if (!nodeId || !gid) return;
@@ -162,6 +232,8 @@ export default function GroupPage() {
 
     const ac = new AbortController();
     const gen = meshGen;
+    let startedMeshToken: number | undefined;
+    let ownsStartedMesh = false;
 
     void (async () => {
       setP2pStatus("连接中…");
@@ -174,19 +246,24 @@ export default function GroupPage() {
         const memberMap = new Map<string, string>();
         for (const m of mem.members) memberMap.set(m.node_id, m.public_key);
 
-        await startGroupMesh({
+        const started = await startGroupMesh({
           groupId: gid,
           nodeId,
           adminPublicKeyBase64Url: pkAdmin,
           memberPublicKeys: memberMap,
-          signalingUrls: peers.map((p) => p.signalingUrl).filter(Boolean),
+          signalingUrls: meshSignalingUrlsRef.current,
           getJwt: async () => {
-            const r = await api.refreshJwt(gid, nodeId, syncDocId, cp);
+            const r = await api.refreshJwt(gid, nodeId, syncDocIdRef.current, cp);
             return r.jwt;
           },
         });
+        startedMeshToken = started.token;
+        ownsStartedMesh = started.owned;
 
-        if (ac.signal.aborted || gen !== meshGen) return;
+        if (ac.signal.aborted || gen !== meshGen) {
+          if (started.owned) void stopGroupMesh(started.token);
+          return;
+        }
         setP2pStatus("已连接");
         setError(null);
       } catch (e) {
@@ -198,9 +275,9 @@ export default function GroupPage() {
 
     return () => {
       ac.abort();
-      void stopGroupMesh();
+      if (ownsStartedMesh && typeof startedMeshToken === "number") void stopGroupMesh(startedMeshToken);
     };
-  }, [gid, nodeId, adminPublicKey, controlPlaneUrl, peers, meshGen, syncDocId]);
+  }, [gid, nodeId, adminPublicKey, controlPlaneUrl, meshGen]);
 
   async function refreshTree() {
     if (!nodeId) return;

@@ -12,6 +12,7 @@ async function main() {
   const rooms = new SignalingRooms();
 
   app.get("/health", async () => ({ status: "ok", service: "signaling" }));
+  app.get("/debug", async () => rooms.snapshot());
 
   app.get("/", async () => ({
     service: "signaling",

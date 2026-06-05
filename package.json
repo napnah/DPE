@@ -5,7 +5,9 @@
   "description": "Distributed Privacy Editor (DPE)",
   "license": "MIT",
   "packageManager": "pnpm@9.15.0",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "turbo run dev --parallel",
     "build": "turbo run build",
@@ -20,15 +22,19 @@
     "verify:p5": "node scripts/verify-p5.mjs",
     "verify:p6": "node scripts/verify-p6.mjs",
     "verify:p6:live": "node scripts/verify-p6.mjs --live-only",
+    "verify:p2p-transport": "node scripts/verify-simple-peer-mesh.mjs",
+    "debug:p2p-flow": "node scripts/debug-p2p-user-flow.mjs",
     "test:p3": "pnpm --filter @dpe/p2p test",
     "test:p4": "pnpm --filter @dpe/yjs-provider test"
   },
   "devDependencies": {
-    "dotenv": "^16.4.7",
+    "@roamhq/wrtc": "^0.10.0",
     "cross-env": "^7.0.3",
-    "ws": "^8.18.0",
+    "dotenv": "^16.4.7",
     "prettier": "^3.4.2",
+    "simple-peer": "^9.11.1",
     "turbo": "^2.3.3",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "ws": "^8.18.0"
   }
 }
