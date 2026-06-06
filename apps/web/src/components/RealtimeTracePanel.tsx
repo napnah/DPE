@@ -5,6 +5,7 @@ import {
   downloadRealtimeTraceReport,
   getRealtimeTraceEvents,
   isRealtimeTraceEnabled,
+  isRealtimeTraceUiEnabled,
   setRealtimeTraceEnabled,
   subscribeRealtimeTrace,
   type RealtimeTraceEvent,
@@ -16,6 +17,7 @@ function formatEventLine(ev: RealtimeTraceEvent): string {
 }
 
 export function RealtimeTracePanel() {
+  const uiEnabled = isRealtimeTraceUiEnabled();
   const [open, setOpen] = useState(false);
   const [enabled, setEnabled] = useState(isRealtimeTraceEnabled);
   const [events, setEvents] = useState<RealtimeTraceEvent[]>(() => getRealtimeTraceEvents());
@@ -23,10 +25,11 @@ export function RealtimeTracePanel() {
   const [filter, setFilter] = useState("");
 
   useEffect(() => {
+    if (!uiEnabled) return;
     return subscribeRealtimeTrace(() => {
       setEvents(getRealtimeTraceEvents());
     });
-  }, []);
+  }, [uiEnabled]);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -65,6 +68,8 @@ export function RealtimeTracePanel() {
     setEnabled(next);
     showToast(next ? "追踪已开启" : "追踪已关闭");
   }
+
+  if (!uiEnabled) return null;
 
   return (
     <section className="app-panel app-realtime-trace">

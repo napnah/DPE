@@ -35,9 +35,8 @@ let context: Record<string, string> = {};
 
 function envTraceEnabled(): boolean {
   const flag = import.meta.env.VITE_DPE_P2P_TRACE;
-  if (flag === "0" || flag === "false") return false;
   if (flag === "1" || flag === "true") return true;
-  return import.meta.env.DEV;
+  return false;
 }
 
 let enabled = envTraceEnabled();
@@ -74,6 +73,13 @@ function pushEvent(
 
 export function isRealtimeTraceEnabled(): boolean {
   return enabled;
+}
+
+/** UI panel is opt-in; tracing itself uses VITE_DPE_P2P_TRACE=1. */
+export function isRealtimeTraceUiEnabled(): boolean {
+  const flag = import.meta.env.VITE_DPE_P2P_TRACE_UI;
+  if (flag === "1" || flag === "true") return isRealtimeTraceEnabled();
+  return false;
 }
 
 export function setRealtimeTraceEnabled(on: boolean): void {

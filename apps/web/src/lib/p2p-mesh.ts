@@ -137,13 +137,15 @@ export class GroupP2pMesh {
   private readonly wsReconnectAttempts = new Map<string, number>();
   private readonly extraSignalingUrls = new Set<string>();
   private stopped = false;
-  private static readonly HEALTH_INTERVAL_MS = 5_000;
+  private static readonly HEALTH_INTERVAL_MS = 2_000;
   private static readonly WS_RECONNECT_MAX_MS = 30_000;
   private static readonly PONG_TIMEOUT_MS = 15_000;
   private static readonly DPE_PING = "__dpe_ping__";
   private static readonly DPE_PONG = "__dpe_pong__";
   private static readonly PENDING_WIRE_MAX = 64;
-  private static readonly ANSWER_TIMEOUT_MS = 15_000;
+  private static readonly ANSWER_TIMEOUT_MS = 8_000;
+  /** Delay before retrying WebRTC after a peer drop or failed handshake. */
+  private static readonly PEER_RECONNECT_MS = 250;
   private readonly pendingWireMessages: Array<{ peerId: string; text: string }> = [];
 
   private static classifyWireMessage(text: string): string {
@@ -233,6 +235,36 @@ export class GroupP2pMesh {
     return this.config.nodeId < peerId;
   }
 
+  private tryConnectPeer(peerId: string, reason: string): void {
+    if (peerId === this.config.nodeId) return;
+    if (!this.currentRoomPeers.has(peerId)) return;
+    if (!this.hasOpenSignaling()) return;
+    if (this.hasOpenChannel(peerId) || this.hasPendingConnection(peerId)) return;
+    if (!this.shouldInitiate(peerId)) return;
+    traceRealtime("mesh", "try_connect", { peer: peerId.slice(0, 12), reason }, "debug");
+    this.connectPeer(peerId, true);
+  }
+
+  /** Tear down stale peers on leave; reconnect immediately when a peer re-joins (page refresh). */
+  private handleRoomPeerChanges(prevRoomPeers: Set<string>): void {
+    const self = this.config.nodeId;
+    for (const peerId of prevRoomPeers) {
+      if (peerId === self) continue;
+      if (!this.currentRoomPeers.has(peerId)) {
+        traceRealtime("signal", "peer_left_room", { peer: peerId.slice(0, 12) }, "info");
+        this.cleanupPeer(peerId);
+      }
+    }
+    for (const peerId of this.currentRoomPeers) {
+      if (peerId === self) continue;
+      if (!prevRoomPeers.has(peerId)) {
+        traceRealtime("signal", "peer_joined_room", { peer: peerId.slice(0, 12) }, "info");
+        this.cleanupPeer(peerId);
+        this.tryConnectPeer(peerId, "peer_rejoined");
+      }
+    }
+  }
+
   private hasOpenChannel(peerId: string): boolean {
     return this.peers.get(peerId)?.connected === true;
   }
@@ -281,8 +313,7 @@ export class GroupP2pMesh {
     if (this.hasOpenSignaling()) {
       for (const peerId of this.currentRoomPeers) {
         if (peerId === this.config.nodeId) continue;
-        if (this.hasOpenChannel(peerId) || this.hasPendingConnection(peerId)) continue;
-        if (this.shouldInitiate(peerId)) this.connectPeer(peerId, true);
+        this.tryConnectPeer(peerId, "health_check");
       }
     }
 
@@ -395,6 +426,7 @@ export class GroupP2pMesh {
         : new Error("无法连接任何信令服务");
     }
     this.startHealthLoop();
+    queueMicrotask(() => this.runHealthCheck());
   }
 
   private sendJoin(socket: WebSocket): void {
@@ -576,8 +608,10 @@ export class GroupP2pMesh {
     };
 
     if (msg.type === "peers" && msg.peers) {
+      const prevRoomPeers = new Set(this.currentRoomPeers);
       this.roomPeersBySignal.set(url, new Set(msg.peers));
       this.rebuildCurrentRoomPeers();
+      this.handleRoomPeerChanges(prevRoomPeers);
       traceRealtime("signal", "room_peers", {
         url,
         count: msg.peers.length,
@@ -586,9 +620,7 @@ export class GroupP2pMesh {
       this.emitPeerStats(Math.max(0, this.currentRoomPeers.size - 1));
       for (const peerId of this.currentRoomPeers) {
         if (peerId === this.config.nodeId) continue;
-        if (this.hasOpenChannel(peerId) || this.hasPendingConnection(peerId)) continue;
-        if (!this.shouldInitiate(peerId)) continue;
-        this.connectPeer(peerId, true);
+        this.tryConnectPeer(peerId, "room_peers");
       }
       return;
     }
@@ -920,6 +952,9 @@ export class GroupP2pMesh {
         signalId,
       }, "warn");
       this.cleanupPeer(peerId);
+      if (!this.stopped && this.currentRoomPeers.has(peerId) && this.shouldInitiate(peerId)) {
+        this.schedulePeerReconnect(peerId);
+      }
     }, GroupP2pMesh.ANSWER_TIMEOUT_MS);
   }
 
@@ -928,10 +963,8 @@ export class GroupP2pMesh {
     const timer = setTimeout(() => {
       this.reconnectTimers.delete(peerId);
       if (this.stopped || !this.hasOpenSignaling() || !this.currentRoomPeers.has(peerId)) return;
-      if (this.shouldInitiate(peerId) && !this.hasPendingConnection(peerId)) {
-        this.connectPeer(peerId, true);
-      }
-    }, 1000);
+      this.tryConnectPeer(peerId, "scheduled_reconnect");
+    }, GroupP2pMesh.PEER_RECONNECT_MS);
     this.reconnectTimers.set(peerId, timer);
   }
 

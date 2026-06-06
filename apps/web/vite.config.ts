@@ -13,5 +13,10 @@ export default defineConfig({
       "@dpe/crypto": path.join(repoRoot, "packages/crypto/src/index.ts"),
     },
   },
-  server: { port: 5173, host: true },
+  server: {
+    port: 5173,
+    host: true,
+    // Allow ngrok / tunnel Host headers (subdomain changes each session).
+    allowedHosts: true,
+  },
 });

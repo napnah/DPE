@@ -15,13 +15,7 @@ import {
 } from "../lib/api";
 import { useIdentity } from "../lib/use-identity";
 import { getActiveMesh, startGroupMesh, stopGroupMesh } from "../lib/mesh-context";
-import {
-  getRealtimeDebugSnapshot,
-  resetRealtimeDebugSnapshot,
-  subscribeRealtimeDebug,
-  type RealtimeDebugSnapshot,
-} from "../lib/realtime-debug";
-import { RealtimeTracePanel } from "../components/RealtimeTracePanel";
+import { resetRealtimeDebugSnapshot } from "../lib/realtime-debug";
 import { clearRealtimeTrace, setRealtimeTraceContext } from "../lib/realtime-trace";
 import {
   buildMeshSignalingUrls,
@@ -70,7 +64,6 @@ export default function GroupPage() {
   const [localSignalingUrl, setLocalSignalingUrl] = useState<string | undefined>();
   const [p2pStatus, setP2pStatus] = useState("未连接");
   const [error, setError] = useState<string | null>(null);
-  const [debug, setDebug] = useState<RealtimeDebugSnapshot>(() => getRealtimeDebugSnapshot());
   const [meshGen, setMeshGen] = useState(0);
 
   const [newItemTitle, setNewItemTitle] = useState("");
@@ -151,11 +144,6 @@ export default function GroupPage() {
     },
     [controlPlaneUrl, setSearchParams],
   );
-
-  useEffect(() => {
-    const off = subscribeRealtimeDebug((snapshot) => setDebug(snapshot));
-    return off;
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -394,13 +382,6 @@ export default function GroupPage() {
               </>
             )}
           </p>
-          <p className="app-muted">
-            Debug · tx {debug.txCount}/{debug.txBytes}B · rx {debug.rxCount}/{debug.rxBytes}B
-            {` · peers=${debug.peersInRoom} open=${debug.channelsOpen} authed=${debug.authedPeers}`}
-            {debug.lastRejectReason ? ` · reject=${debug.lastRejectReason}` : ""}
-            {debug.lastAuthError ? ` · authErr=${debug.lastAuthError}` : ""}
-          </p>
-          <RealtimeTracePanel />
         </div>
       </header>
 
