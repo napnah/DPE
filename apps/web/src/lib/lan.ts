@@ -1,4 +1,6 @@
-const LAN = import.meta.env.VITE_LAN_AGENT_URL ?? "http://localhost:3003";
+import { resolveLanAgentBaseUrl, resolveSignalingWebSocketUrl } from "./dev-tunnel";
+
+const LAN = resolveLanAgentBaseUrl();
 
 export type LanPeer = {
   uid: string;
@@ -79,7 +81,7 @@ export function buildMeshSignalingUrls(opts: {
   for (const raw of opts.peerSignalingUrls ?? []) {
     if (raw.trim()) urls.add(normalizeSignalingUrl(raw));
   }
-  const envDefault = import.meta.env.VITE_SIGNALING_URL ?? "ws://localhost:3002/ws";
+  const envDefault = resolveSignalingWebSocketUrl();
   urls.add(normalizeSignalingUrl(envDefault));
   if (opts.controlPlaneUrl) {
     const derived = deriveSignalingUrlFromControlPlane(opts.controlPlaneUrl);

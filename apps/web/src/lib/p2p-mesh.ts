@@ -16,6 +16,7 @@ import {
   markRealtimeTx,
 } from "./realtime-debug";
 import { traceRealtime } from "./realtime-trace.js";
+import { resolveSignalingWebSocketUrl } from "./dev-tunnel.js";
 
 type SimplePeerSignal = Record<string, unknown>;
 type SimplePeerInstance = SimplePeerPeer;
@@ -36,8 +37,7 @@ function normalizeSignalingUrl(raw: string): string {
 }
 
 function defaultSignalingUrl(): string {
-  const raw = import.meta.env.VITE_SIGNALING_URL ?? "ws://localhost:3002/ws";
-  return normalizeSignalingUrl(raw);
+  return normalizeSignalingUrl(resolveSignalingWebSocketUrl());
 }
 
 function signalKind(signal: unknown): string {

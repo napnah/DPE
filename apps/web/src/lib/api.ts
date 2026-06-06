@@ -1,16 +1,35 @@
 import type { LanPeer } from "./lan";
+import {
+  isRemoteDemoViewer,
+  resolveClientControlPlaneUrl,
+  resolveControlPlaneBaseUrl,
+} from "./dev-tunnel";
 
-const API = import.meta.env.VITE_API_URL ?? "http://localhost:3001";
+const API = resolveControlPlaneBaseUrl();
 
 export function getApiBaseUrl(): string {
   return API.replace(/\/$/, "");
 }
 
+const REMOTE_FETCH_TIMEOUT_MS = 8_000;
+
+function federatedControlPlaneBases(peers: Pick<LanPeer, "controlUrl">[]): string[] {
+  const local = getApiBaseUrl();
+  if (isRemoteDemoViewer()) return [local];
+  const bases = new Set<string>([local]);
+  for (const peer of peers) {
+    const base = peer.controlUrl?.trim();
+    if (base) bases.add(base);
+  }
+  return [...bases];
+}
+
 async function requestAt<T>(base: string, path: string, init?: RequestInit): Promise<T> {
-  const root = base.replace(/\/$/, "");
+  const root = (resolveClientControlPlaneUrl(base) ?? base).replace(/\/$/, "");
   const session = loadSessionToken();
   const res = await fetch(`${root}${path}`, {
     ...init,
+    signal: init?.signal ?? (isRemoteDemoViewer() ? AbortSignal.timeout(REMOTE_FETCH_TIMEOUT_MS) : undefined),
     headers: {
       "content-type": "application/json",
       ...(session ? { authorization: `Bearer ${session}` } : {}),
@@ -213,13 +232,8 @@ export const api = {
 
   async listAllGroupsFederated(nodeId: string | null | undefined, peers: Pick<LanPeer, "controlUrl">[]) {
     const query = nodeId ? `?node_id=${encodeURIComponent(nodeId)}` : "";
-    const bases = new Set<string>([getApiBaseUrl()]);
-    for (const peer of peers) {
-      const base = peer.controlUrl?.trim();
-      if (base) bases.add(base);
-    }
     const chunks = await Promise.all(
-      [...bases].map(async (base) => {
+      federatedControlPlaneBases(peers).map(async (base) => {
         try {
           const rows = await requestAt<GroupCardRow[]>(base, `/users/me/groups/all${query}`);
           return rows.map((row) => ({ ...row, control_plane_url: base }));
@@ -252,13 +266,8 @@ export const api = {
 
   /** 本机 + 已发现邻居上的待处理邀请（双机各自数据库时，邀请在群主节点） */
   async listInvitationsFederated(nodeId: string, peers: Pick<LanPeer, "controlUrl">[]) {
-    const bases = new Set<string>([getApiBaseUrl()]);
-    for (const peer of peers) {
-      const base = peer.controlUrl?.trim();
-      if (base) bases.add(base);
-    }
     const chunks = await Promise.all(
-      [...bases].map(async (base) => {
+      federatedControlPlaneBases(peers).map(async (base) => {
         try {
           const rows = await requestAt<InvitationRow[]>(
             base,
@@ -504,9 +513,7 @@ export function resolveGroupControlPlaneUrl(
   groupId: string,
   fromQuery?: string | null,
 ): string | undefined {
-  const q = fromQuery?.trim().replace(/\/$/, "");
+  const q = resolveClientControlPlaneUrl(fromQuery);
   if (q) return q;
-  const saved = loadGroupControlPlaneUrl(groupId);
-  if (saved) return saved;
-  return undefined;
+  return resolveClientControlPlaneUrl(loadGroupControlPlaneUrl(groupId));
 }

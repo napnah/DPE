@@ -202,7 +202,8 @@ export default function GroupPage() {
     return () => {
       cancelled = true;
     };
-  }, [gid, nodeId, controlPlaneUrl, peerSignalingKey]);
+  }, [gid, nodeId, controlPlaneUrl]);
+
 
   useEffect(() => {
     if (!nodeId || !gid) return;
